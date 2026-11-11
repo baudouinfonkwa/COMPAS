@@ -26,6 +26,9 @@ void FVM_Conservative2FluxPhaseField_K(int i, int j, int k,
                                        FiniteVolume_Parameter const& FiniteVolume_Parm,
                                        PhaseField_Parameter const& PhaseField_Parm)
 {
+    // The IE mixture PF update has no separate nonconservative face flux.
+    // The driver still writes every slot to the register, including on AMR.
+    for (int c=0; c<NC_TERMS; ++c) FluxNC[c] = 0.;
     // int ID_Bound   = FiniteVolume_Parm.ID_Bound;
     int ID_WENO    = FiniteVolume_Parm.ID_WENO;
     int ID_Limiter = FiniteVolume_Parm.ID_Limiter;
@@ -46,7 +49,7 @@ void FVM_Conservative2FluxPhaseField_K(int i, int j, int k,
     int ID_Flux           = PhaseField_Parm.ID_Flux;
     int ID_FluxPhase2Flux = PhaseField_Parm.ID_FluxPhase2Flux;
 
-    int ID_BE             = 2;  // PhaseField_Parm.ID_Formulation;
+    int ID_Formulation    = PhaseField_Parm.ID_Formulation;
     
     FluxPhaseField(Flux,
                    cmax,
@@ -56,7 +59,7 @@ void FVM_Conservative2FluxPhaseField_K(int i, int j, int k,
                    EOS_Parameter,
                    ID_Flux,
                    ID_FluxPhase2Flux,
-                   ID_BE
+                   ID_Formulation
                 );
     
 }

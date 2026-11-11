@@ -16,13 +16,15 @@
 // =======================================
 // Initial condition
 //
-// Shock-air bubble interaction in water, with the N-phase six-equation model (NPHASE = 2).
-// Air (material 2, 1 kg/m^3) fills a circle of radius 0.5 centered at the origin, on the
-// symmetry plane y = 0, in water (material 1) at rest with pressure prob.P0 and density
-// prob.rho0. A shock of Mach number prob.Mach travels in +x through the water from
-// x = -0.85. Both phases start in pressure equilibrium ahead of the shock. The state is
-// built in SI units and then scaled by rho0, P0 and u0 = sqrt(P0/rho0); lengths are in
-// units of the bubble diameter. The volume fractions are not clipped (eps = 0).
+// Shock-bubble interaction: NPHASE=2 water/air, or NPHASE=3 water/vapor/air.
+// A radius-0.5 cavity is centered on the symmetry plane. Three-phase raw gas
+// volumes are split with prob.bubble_vapor_fraction. With a positive
+// prob.initial_temperature, all upstream densities come from EOS(P0,T).
+// Otherwise the two-phase case retains its prescribed rho0/rho_air densities.
+// A frozen-water RH shock of Mach prob.Mach starts at x=-0.85. The reference
+// density, pressure, velocity and length are rho0, P0, sqrt(P0/rho0) and the
+// bubble diameter. Per-phase initialization floors do not constrain transport
+// or chemical equilibrium; chemistry can set phase mass/volume exactly to zero.
 // =======================================
 
 AMREX_GPU_DEVICE
@@ -48,19 +50,23 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
     // Interface: tanh profile of width eta about the bubble surface
     // ---------------------------------------
     const amrex::Real eta = parm.PhaseField_Parm.Eta_Multiplier * dx_FinestLevel;
-    const amrex::Real eps = 0.0;
     const amrex::Real Psi = 0.5 - std::sqrt(x*x + y*y + z*z);
 
-    const amrex::Real Alpha1 = 0.5 * (1.0 + std::tanh(-Psi / (std::sqrt(2.0) * eta)) * (1.0 - eps));
-    const amrex::Real Alpha2 = 1.0 - Alpha1;
+    const amrex::Real indicator=eta>0. ? std::tanh(-Psi/(std::sqrt(2.)*eta)) : (Psi<0.?1.:-1.);
+    amrex::Array<amrex::Real,NPHASE> alpha{0.5*(1.+indicator),0.5*(1.-indicator)};
+    if constexpr(NPHASE==3){
+        const amrex::Real bubble=alpha[1];
+        alpha[1]=bubble*parm.bubble_vapor_fraction;
+        alpha[2]=bubble*(1.-parm.bubble_vapor_fraction);
+    }
+    parm.ApplyInitialAlphaFloor(alpha);
 
     // ---------------------------------------
     // Fluids at rest, and the post-shock state of the water behind the shock (SI units)
     // ---------------------------------------
     const amrex::Real x_Shock = -0.85;
 
-    amrex::Real rho1 = parm.rho0;
-    amrex::Real rho2 = 1.0;
+    amrex::Real rho1 = parm.upstream_rho*parm.rho0;
     amrex::Real P1   = parm.P0;
     amrex::Real P2   = parm.P0;
     amrex::Real u    = 0.0;
@@ -68,22 +74,24 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
     amrex::Real w    = 0.0;
 
     if (x < x_Shock) {
-        amrex::Real shock[5];
-        StiffenedShockConditions(parm.Mach, 0.0, parm.P0, parm.rho0, parm.gamma[0], parm.pinf[0]*parm.P0, shock);
-        rho1 = shock[0];
-        u    = shock[1];
-        P1   = shock[2];
+        rho1 = parm.shock_rho * parm.rho0;
+        u    = parm.shock_u * parm.u0;
+        P1   = parm.shock_p * parm.P0;
     }
 
     // ---------------------------------------
     // Scale, convert to primitive and then conservative
     // ---------------------------------------
     amrex::Array<amrex::Real, NPHASE> Alphas, Alpha_rhos, Alpha_Ps;
-    Alphas[0]     = Alpha1;                     Alphas[1]     = Alpha2;
-    Alpha_rhos[0] = Alpha1 * rho1 / parm.rho0;  Alpha_rhos[1] = Alpha2 * rho2 / parm.rho0;
-    Alpha_Ps[0]   = Alpha1 * P1 / parm.P0;      Alpha_Ps[1]   = Alpha2 * P2 / parm.P0;
+    for(int l=0;l<NPHASE;++l){
+        Alphas[l]=alpha[l];
+        const amrex::Real density=l==0 ? rho1 :
+            (NPHASE==2 && parm.initial_temperature==0. ? parm.rho_air : parm.upstream_phase_rho[l]*parm.rho0);
+        Alpha_rhos[l]=alpha[l]*density/parm.rho0;
+        Alpha_Ps[l]=alpha[l]*(l==0 ? P1 : P2)/parm.P0;
+    }
     AMREX_D_TERM(u /= parm.u0;, v /= parm.u0;, w /= parm.u0;)
-    const amrex::Real P = Alpha_Ps[0] + Alpha_Ps[1];
+    amrex::Real P=0.;for(int l=0;l<NPHASE;++l)P+=Alpha_Ps[l];
 
     amrex::Array<amrex::Real, NSTATE> Primitive;
     State2Primitive(Primitive,
@@ -130,7 +138,7 @@ void spatio_temporal_tag(int& TagVal,
 //
 // With run.user_output_int = N, COMPAS calls this every N coarse steps. Each call appends
 // one line to <plot directory>/bubble.csv with
-//   V        air volume, int alpha_2 dV (in 2D, the area of the upper half of the bubble)
+//   V        gas-cavity volume, int sum_{k>0} alpha_k dV (upper-half area in 2D)
 //   x_c      x-centroid of the air, int alpha_2 x dV / V
 //   u_c      alpha_2-weighted mean x-velocity of the air, int alpha_2 u dV / V
 //   x_up     upstream interface on the axis, the smallest x where alpha_2 crosses 0.5
@@ -154,8 +162,9 @@ void UserOutputFunction(T& o)
     [=] AMREX_GPU_DEVICE (Cell const& c, State const& U, Parm const&) -> Values<5>
     {
         const int  i = c.i, j = c.j, k = c.k;
-        const Real a2  = U(i,j,k,INDEX_VolumeFraction1+1);
-        const Real a2e = U(i+1,j,k,INDEX_VolumeFraction1+1);
+        // Whole gas cavity: vapor plus air for the three-phase build.
+        Real a2=0.,a2e=0.;
+        for(int l=1;l<NPHASE;++l){a2+=U(i,j,k,INDEX_VolumeFraction1+l);a2e+=U(i+1,j,k,INDEX_VolumeFraction1+l);}
         Real rho = 0.0;
         for (int n = 0; n < NPHASE; ++n) { rho += U(i,j,k,INDEX_Mass1+n); }
         const Real u   = U(i,j,k,INDEX_MomentumX) / rho;

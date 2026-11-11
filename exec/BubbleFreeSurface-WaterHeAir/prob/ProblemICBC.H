@@ -44,14 +44,21 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
 
     // ---------------------------------------
     // Interfaces: tanh profiles of width eta about the bubble surface (radius 0.5) and the
-    // free surface (y = 1.5). No floor is applied to the volume fractions.
+    // free surface (y = 1.5). Initial floors use prob.alpha_floor.
     // ---------------------------------------
     amrex::Real eta = parm.PhaseField_Parm.Eta_Multiplier * dx_FinestLevel;
     amrex::Real Psi = 0.5 - std::sqrt(x*x + y*y + z*z);   // > 0 inside the bubble
 
-    amrex::Real Alpha2 = 1.0 - 0.5 * (1.0 + std::tanh(-Psi / (std::sqrt(2.0) * eta)));  // bubble gas
-    amrex::Real Alpha3 = 0.5 * (1.0 + std::tanh((y - 1.5) / (std::sqrt(2.0) * eta)));   // air
+    amrex::Real Alpha2 = eta>0. ? 0.5*(1.+std::tanh(Psi/(std::sqrt(2.)*eta))) : (Psi>=0.?1.:0.);  // bubble gas
+    amrex::Real Alpha3 = eta>0. ? 0.5*(1.+std::tanh((y-1.5)/(std::sqrt(2.)*eta))) : (y>=1.5?1.:0.);   // air
+    Alpha2 *= 1.-Alpha3; // The bubble occupies the region below the free surface.
     amrex::Real Alpha1 = 1.0 - Alpha2 - Alpha3;                                         // water
+
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+    amrex::Array<amrex::Real,NPHASE> alpha{Alpha1,Alpha2,Alpha3};
+    parm.ApplyInitialAlphaFloor(alpha);
+    Alpha1=alpha[0];Alpha2=alpha[1];Alpha3=alpha[2];
+#endif
 
     // ---------------------------------------
     // Material states (kg/m^3 and Pa), all at rest

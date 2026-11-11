@@ -64,6 +64,7 @@ amr.Interpolater      = "pc_interp"        # Piecewise-constant coarse-to-fine i
 # =====================================================================
 # TIME STEPPING
 # =====================================================================
+run.vnn                     = 0.5  # Multidimensional explicit diffusion stability factor
 run.cfl                     = 0.3
 run.do_subcycle             = 1
 run.check_cfl               = 0
@@ -92,7 +93,7 @@ run.refine.P.grad        = 100.0 100.0 100.0 100.0 100.0 100.0 100.0 100.0
 amr.case_name        = ./plot/ShockBubble-WaterAir-6Eq-Nphase
 amr.plot_int         = 1000000
 amr.t_write_interval = 0.001               # A plotfile every 1e-3 time units
-run.output_vars      = a1 a2 a1rho1 a2rho2 a1rho1e1 a2rho2e2 rho u v P a1p1 a2p2
+run.output_vars = a1 a2 a1rho1 a2rho2 a1rho1e1 a2rho2e2 rho_u rho_v rho_E rho u v P T c a1p1 a2p2
 amr.chk_file         = ./checkpoints/chk
 amr.chk_int          = 20000
 run.user_output_int  = 1                   # Bubble volume, centroid, velocity and axial interfaces every coarse step
@@ -102,6 +103,10 @@ run.user_output_int  = 1                   # Bubble volume, centroid, velocity a
 # PHYSICS AND METHODS
 # =====================================================================
 Physics.pressure_relaxation = 1            # Instantaneous pressure relaxation
+Physics.Relaxation = Pressure  # Optional: PressureTemperature with DIFFUSION=true
+# Final common-pressure and phase-energy reset is always part of relaxation.
+Physics.CompatibleDiffusion = 0  # Optional compatible face work/heat flux
+Physics.HLLCImplementation      = ConservativePart  # Alternative: Consistent
 Physics.RiemannSolver       = "HLLC"
 
 FiniteVolume.Scheme = "MUSCL"
@@ -111,6 +116,9 @@ FiniteVolume.THINC.EPS       = 1.0e-5
 FiniteVolume.THINC.UseNormal = 1
 
 PhaseField.phase_field    = 0              # 1 for Phase-Field regularization of the interface
+PhaseField.ID_FluxPhase2Flux = 1           # Required mixture mapping for internal-energy states
+PhaseField.ID_Flux           = 0           # 0: UD, 1: HLL
+PhaseField.ID_Formulation    = 1           # 0: base, 1: efficient
 PhaseField.cfl            = 0.2            # This and the next two apply when phase_field = 1
 PhaseField.Mechanism      = "CDI"
 PhaseField.ID_ExplicitRC  = 1
@@ -124,6 +132,53 @@ prob.EOS.EOS   = 1
 prob.EOS.gamma = 4.4    1.4                # water, air
 prob.EOS.pinf  = 6.0e8  0.0                # Pa
 
+prob.rho_air = 1.0                        # air density ahead of the shock, kg/m^3
 prob.rho0 = 1000                           # water density ahead of the shock, kg/m^3
 prob.P0   = 101325                         # pressure ahead of the shock, Pa
+prob.bubble_diameter = 500.e-6             # 500 micrometres, dimensional length reference
 prob.Mach = 1.1                            # shock Mach number in water
+
+# Other EOS data, when selected, are also supplied in SI units and scaled in Parm.H:
+# prob.EOS.pref [Pa], prob.EOS.eref/prob.EOS.q [J/kg], prob.EOS.b [m^3/kg],
+# prob.EOS.cv [J/(kg K)]. Optional arrays require one entry per phase.
+# Shock initialization and pressure relaxation support EOS 0/1/2/3.
+# To test EOS 2, replace the EOS selector above and add:
+# prob.EOS.EOS    = 2
+# prob.EOS.gGamma = 3.4       0.4
+# prob.EOS.pref   = -2.64e9   0.0
+# prob.EOS.eref   = 0.0       0.0
+# This constant-reference EOS exactly reproduces the current SG pressure/energy law.
+#
+# To test EOS 3, replace the EOS/gamma/pinf entries above with:
+# prob.EOS.EOS   = 3
+# prob.EOS.gamma = 1.19       1.4
+# prob.EOS.pinf  = 7.028e8    0.0
+# prob.EOS.b     = 6.61e-4    0.0
+# prob.EOS.q     = -1177788   0.0
+# prob.EOS.cv = 588.3346323529412 844.375
+# NASG water: Le Metayer & Saurel (2016), Table V; second phase is ideal air.
+# Mach is relative to the upstream sound speed of the selected water EOS.
+# b and q are converted to solver units after every EOS initialization.
+
+# Per-phase INITIAL volume-fraction floors; no clipping during transport.
+prob.alpha_floor = 1.e-12 1.e-12
+
+# SI transport coefficients; Parm.H scales them using the bubble diameter.
+# Constant benchmark coefficients (water, air); bulk viscosities set to zero.
+prob.EOS.mu = 0 0
+prob.EOS.muB = 0 0
+prob.EOS.kappa = 0 0
+# Optional caloric data for joint P-T experiments:
+# A 300 K upstream benchmark at the SAME densities and pressures can instead
+# calibrate this constant-coefficient EOS with (not measured heat capacities):
+# prob.EOS.cv = 588.3346323529412 844.375
+# For EOS=3, use cv=3610 717.5 from the NASG material block above.
+# To recover the old inviscid pressure-only benchmark in this diffusion build:
+# Physics.Relaxation=Pressure Physics.CompatibleDiffusion=0
+# prob.EOS.mu=0 0 prob.EOS.muB=0 0 prob.EOS.kappa=0 0
+
+# Caloric EOS coefficients in J/(kg K), scaled in Parm.H.
+prob.EOS.cv = 588.3346323529412 844.375
+
+# Optional equilibrium mass transfer; requires calibrated EOS entropy data and P-T relaxation.
+Physics.ChemicalRelaxation = 0

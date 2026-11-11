@@ -288,3 +288,9 @@ described under [Python environment](../getting-started/install.md#python-enviro
 The double Mach video on the
 [Verification and validation](../verification.md#double-mach-reflection) page is drawn with `movie`
 and `--width-px 2400`, from a run that writes plotfiles more often.
+
+## IE N-phase kernel and saved-state checks
+
+Additional EOS, relaxation, shock-initializer and AMR verification is described in
+`verification/README.md` in the source tree. The five-material IE advection regression retains its stage-admissibility checks
+and compares the five schemes at the same physical time.

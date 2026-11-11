@@ -204,18 +204,29 @@ for $k = 1,\dots,N$, with $P = \sum_k \alpha_kP_k$ and $\sum_k\mathcal{R}_k = 0$
   frozen sound speed $\rho c^2 = \sum_k \alpha_k\rho_kc_k^2$, with
   $\rho_kc_k^2 = ((A_k+1)P_k + B_k)/(A_k\xi_k)$ for every equation of state, which is
   $\gamma_k(P_k + P_{\infty,k})/\xi_k$ for the stiffened gas and the Noble-Abel stiffened gas.
-- `Physics.pressure_relaxation = 1`: after every stage (and with AMR and subcycling again in the
-  coarse cells that the reflux corrects) a Newton iteration finds the common pressure $P$ from
-
-  $$
-  \sum_k \frac{\alpha_k\,(P_k - P)}{\rho_k c_k^2(P)} = 0 ,
-  $$
-
-  the volume fractions follow with $P_I = P$, and the phase internal energies are reset from
-  $\rho e = \rho E - \tfrac12\rho\lvert\vec u\rvert^2$. It is off by default. Where the iteration
-  fails (for instance a phase energy below the minimum of its equation of state), the volume
-  fractions come from the [safeguarded relaxation](#safeguarded-pressure-relaxation); the reset is
-  the same. As in `SIXEQS`, a volume fraction outside $[0, 1]$ is kept, not clipped.
+- `Physics.pressure_relaxation = 1`, `Physics.Relaxation = Pressure`: an endpoint
+  pressure-work solve changes the volume fractions while preserving partial masses,
+  momentum and mixture total energy. A plain Newton iteration starts on the
+  positive-residual branch; pressure and phase energies are then reset from the
+  transported mixture energy. There is no bracket/bisection fallback or positive
+  trace cutoff. Invalid states and failed solves stop with a diagnostic.
+- `Physics.Relaxation = PressureTemperature`: solve the joint volume and energy
+  constraints for common pressure and temperature, preserving every partial mass,
+  momentum and mixture total energy. It runs after initialization, time stages,
+  Phase-Field stages and applicable reflux corrections. It requires pressure
+  relaxation and a diffusion-enabled build, even with zero transport coefficients.
+- `Physics.ChemicalRelaxation = 1`: additionally exchanges mass among explicitly
+  paired immiscible phases of the same substance to equalize chemical potential,
+  including endpoints where a phase disappears. Group mass, momentum and mixture
+  total energy are conserved. It requires calibrated reference-entropy data and
+  P-T relaxation; it does not model chemical reactions between substances.
+- These relaxations use the common affine EOS coefficients for EOS 0 (ideal gas),
+  1 (stiffened gas), 2 (constant-reference Mie–Grüneisen) and 3 (Noble-Abel
+  stiffened gas). EOS 2 here has constant reference pressure and energy; a general
+  density-dependent cold curve is outside this implementation.
+- Negative fractions/masses beyond roundoff, invalid available volume, nonfinite
+  data and inadmissible thermal states are rejected. There is no transport-state
+  clipping or separate thermal-energy correction algorithm.
 - $N$ is set with `-DNPHASE=`$N$ in the `GNUmakefile`.
 - With `-DDIFFUSION=true` the model has viscous and conductive fluxes, described in the next
   section.
@@ -225,8 +236,8 @@ for $k = 1,\dots,N$, with $P = \sum_k \alpha_kP_k$ and $\sum_k\mathcal{R}_k = 0$
 
 ## Safeguarded pressure relaxation
 
-Both six-equation models fall back on it where their own solution of the pressure relaxation
-fails. With the phase energies exchanged by $-P\,d\alpha_k$, the relaxed volume fractions are
+The two-phase `SIXEQS` model falls back on it where its own solution fails.
+The N-phase IE solver uses the algorithm described above and does not use this fallback. With the phase energies exchanged by $-P\,d\alpha_k$, the relaxed volume fractions are
 $\alpha_k(P) = \alpha_k + \phi_k(P_k - P)/(\gamma_k(P + P_{\infty,k}))$ (Huang 2026, Eq. 32).
 Phases that are absent, without mass, outside the range of their equation of state, or with
 $\alpha_k$ at or below `Physics.pressure_relaxation_trace` (default 0) keep their volume fraction
@@ -273,9 +284,13 @@ conductivities. The test cases `Couette2Layer-*` and `HeatConduction2Mat-*` chec
 exact solutions ([Two-layer Couette flow](../verification.md#two-layer-couette-flow),
 [Conduction between two materials](../verification.md#conduction-between-two-materials)).
 
-Without the pressure-temperature relaxation, and always in `SIXEQS_IE_NPHASE`, each phase
-conducts only through itself, so no heat passes from one phase to another (a run with a nonzero
-conductivity prints a warning).
+Without pressure-temperature relaxation, each phase conducts through itself. In IE,
+`Physics.CompatibleDiffusion=1` uses face traction/work consistently in the internal
+energy update and enables a harmonic mixture-conductivity flux for perfect thermal
+contact. Its AMR correction uses those same face quantities. With
+`CompatibleDiffusion=0`, IE keeps the separate-phase flux/heating formulation;
+selecting P-T independently equilibrates each cell but does not change those
+transport fluxes. These are distinct choices with distinct interface behavior.
 
 The time step is limited by `run.vnn` ([Time stepping](inputs.md#time-stepping)) with the larger
 of the momentum and thermal diffusivities of each face. The walls are those of the five-equation
@@ -365,3 +380,15 @@ fractions also stay bounded. In the six-equation models the `WENO3B` and `WENO5B
 the volume fractions and partial densities.
 The papers for the limiter, for adaptive mesh refinement and for the WENO schemes are listed in
 [Citing COMPAS](../about/citing.md).
+
+### IE WENO reconstruction admissibility
+
+In `SIXEQS_IE_NPHASE`, WENO3B and WENO5B form weighted phasic pressure from their
+limited volume fraction and reconstructed intrinsic pressure. WENO5 keeps its
+component-wise nonlinear weights and adds a common convex limiter on its two-face
+polynomial; WENO5B retains shared mass/volume weights. These methods bound fractions,
+partial masses, available volume and phasic thermal energy at the faces and interior
+quadrature point. The limiter is inactive for smooth admissible reconstruction.
+It changes face reconstruction, not evolved cell averages, and the conservative
+update continues to use shared face fluxes. The timestep restriction is described
+under [Time stepping](inputs.md#time-stepping).

@@ -447,7 +447,13 @@ COMPAS::InitData ()
         const Real time = 0.0;
         InitFromScratch(time);
         AverageDown(dof_new);
-
+#if PHYSICS == SIXEQS_IE_NPHASE
+        if(h_parm->Physics_Parm.PressureTemperatureRelaxation()){
+            for(int lev=0;lev<=finest_level;++lev)SixEqIE_RelaxEquilibrium(dof_new[lev],d_parm,h_parm->Physics_Parm.chemical_relaxation);
+            AverageDown(dof_new);
+            for(int lev=0;lev<=finest_level;++lev)CalculateInitialcmax(lev);
+        }
+#endif
         if (chk_int > 0) {
             WriteCheckpointFile();
         }
@@ -473,16 +479,28 @@ COMPAS::InitData ()
             c_max[lev].setVal(c_max_est_adv,0,1,0);
 #endif
 #if (DIFFUSION==true)    
+#if PHYSICS == SIXEQS_IE_NPHASE
+            amrex::Real inverse_square_sum=0.;
+            for(int d=0;d<AMREX_SPACEDIM;++d)inverse_square_sum+=1./(dx[d]*dx[d]);
+            amrex::Real c_max_est_diff=vnn/(2.*inverse_square_sum*dt[lev]);
+#else
             amrex::Real c_max_est_diff = 0.0;
             for (int idim = 0; idim < AMREX_SPACEDIM; ++idim)
             {
                 c_max_est_diff = std::max(c_max_est_diff,vnn*dx[idim]*dx[idim]/dt[0]);
             }
+#endif
             c_max[lev].setVal(c_max_est_diff,1,1,0);        
 #endif
         }
     }
 
+#if PHYSICS == SIXEQS_IE_NPHASE
+    if(!restart_chkfile.empty() && h_parm->Physics_Parm.PressureTemperatureRelaxation()){
+        for(int lev=0;lev<=finest_level;++lev)SixEqIE_RelaxEquilibrium(dof_new[lev],d_parm,h_parm->Physics_Parm.chemical_relaxation);
+        for(int lev=0;lev<=finest_level;++lev)CalculateInitialcmax(lev);
+    }
+#endif
     if (plot_int > 0) {
         CalculateOutputMF();
         WritePlotFile();
@@ -1278,6 +1296,9 @@ COMPAS::ReadParameters ()
         pp.query("cfl_switch", cfl_switch);
         pp.query("timestep_change_limiter",timestep_change_limiter);
         pp.query("vnn", vnn);
+#if PHYSICS == SIXEQS_IE_NPHASE && DIFFUSION == true
+        if(!std::isfinite(vnn) || !(vnn>0.) || vnn>1.)amrex::Abort("SIXEQS_IE_NPHASE requires 0 < run.vnn <= 1");
+#endif
         pp.query("do_reflux", do_reflux);
         pp.query("do_subcycle", do_subcycle);
         pp.queryarr("output_vars", output_vars);
@@ -2322,11 +2343,20 @@ COMPAS::EstTimeStep (Real& dt_est, int lev, Real const& time)
         // Real est = facevel[lev][idim].norminf(0,0,true);
         Real est_adv = c_max[lev].norminf(0,0,true);
         dt_est = amrex::min(dt_est, cfl*dx[idim]/est_adv);
+#if PHYSICS == SIXEQS_IE_NPHASE
+        dt_est=amrex::min(dt_est,SixEqIE_WENOTimeStep(est_adv,dx,AMREX_SPACEDIM,
+            h_parm->FiniteVolume_Parm.ID_WENO,h_parm->FiniteVolume_Parm.ID_Limiter,
+            h_parm->FiniteVolume_Parm.ID_Poly));
+#endif
 #endif
 
 #if (DIFFUSION==true)
         Real est_diff = c_max[lev].norminf(1,0,true);
+#if PHYSICS == SIXEQS_IE_NPHASE
+        dt_est = amrex::min(dt_est,SixEqIE_DiffusionTimeStep(est_diff,vnn,dx,AMREX_SPACEDIM));
+#else
         dt_est = amrex::min(dt_est, vnn*dx[idim]*dx[idim]/est_diff);
+#endif
 #endif
     }
     // dt_est *= cfl;

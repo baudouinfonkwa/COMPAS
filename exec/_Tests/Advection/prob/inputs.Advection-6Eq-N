@@ -104,7 +104,7 @@ amr.case_name        = ./plot/Advection6Eq-N   # Output directory and file prefi
 amr.plot_int         = 1000000      # Frequency of plotfile generation
 amr.t_write_interval = 0.2          # A plotfile every 0.2 time units
 
-run.output_vars = a1rho1 rho u v P a1 a2 a3 a4 a5 # Variables to include in plotfiles
+run.output_vars = a1 a2 a3 a4 a5 a1rho1 a2rho2 a3rho3 a4rho4 a5rho5 a1rho1e1 a2rho2e2 a3rho3e3 a4rho4e4 a5rho5e5 rho_u rho_v rho_E rho u v P c a1p1 a2p2 a3p3 a4p4 a5p5
 
 run.user_output_int = 1             # Volumes, bounds and equilibrium errors every coarse step
 
@@ -120,9 +120,15 @@ amr.chk_int  = 20000                # Steps between checkpoints
 # PHYSICS OPTIONS
 # =====================================================================
 Physics.pressure_relaxation = 1      # Instantaneous pressure relaxation
+Physics.Relaxation = Pressure             # Pressure (0) or PressureTemperature (1)
+# Final common-pressure and phase-energy reset is always part of relaxation.
+Physics.HLLCImplementation      = ConservativePart  # Alternative: Consistent
 Physics.RiemannSolver = "HLLC"       # Riemann solver type
 
 PhaseField.phase_field    = 1        # Phase-Field regularization of the interfaces
+PhaseField.ID_FluxPhase2Flux = 1           # Required mixture mapping for internal-energy states
+PhaseField.ID_Flux           = 0           # 0: UD, 1: HLL
+PhaseField.ID_Formulation    = 1           # 0: base, 1: efficient
 PhaseField.cfl            = 0.3      # Phase-field CFL number
 PhaseField.Mechanism      = "ACDI"   # Phase-Field model
 PhaseField.ID_ExplicitRC  = 1        # 0 implicit, 1 explicit Phase-Field treatment
@@ -145,3 +151,12 @@ FiniteVolume.THINC.NormalThreshold = 0.4
 prob.EOS.EOS   = 1
 prob.EOS.gamma = 1.4 1.6 1.8 1.4 1.4
 prob.EOS.pinf  = 0.0 0.0 0.0 0.0 0.0
+
+# Per-phase INITIAL volume-fraction floors; no clipping during transport.
+prob.alpha_floor = 1.e-12 1.e-12 1.e-12 1.e-12 1.e-12
+
+# Heat capacities: J/(kg K) in the bubble cases; model units in _Tests.
+prob.EOS.cv = 1 1 1 1 1
+
+# Optional equilibrium mass transfer; requires calibrated EOS entropy data and P-T relaxation.
+Physics.ChemicalRelaxation = 0

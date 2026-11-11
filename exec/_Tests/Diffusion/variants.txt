@@ -31,6 +31,13 @@ scheme-weno5            max_step=20 FiniteVolume.Scheme=WENO5
 no-relaxation           max_step=20 Physics.pressure_relaxation=0
 
 [Couette2Layer-6Eq-N]        BUILD=6Eq-N   inputs=prob/inputs.Couette2Layer-6Eq-N
+# Joint equilibrium can be selected independently of the flux formulation.
+relax-pt                max_step=20 Physics.Relaxation=PressureTemperature
+# Identical caloric gases: dispatch/parser regression; nontrivial mass transfer is checked natively.
+chemical-identical      max_step=5 Physics.Relaxation=PressureTemperature Physics.ChemicalRelaxation=1 Physics.ChemicalRelaxation.Pairs=0 1 Physics.ChemicalRelaxation.Tolerance=1e-9 Physics.ChemicalRelaxation.MaxSweeps=128 prob.EOS.Substance=gas gas prob.EOS.sref=0 0 prob.EOS.T_ref=1 prob.EOS.p_ref=1
+compatible              max_step=1000000 Physics.CompatibleDiffusion=1 Physics.Relaxation=PressureTemperature
+# Current IE solver options; the final pressure/energy reset stays on in both.
+hllc-consistent        max_step=10 Physics.HLLCImplementation=Consistent
 # The base inputs use the N-phase six-equation model (NPHASE = 2) with DIFFUSION = true, a sharp
 # interface, the viscosity ratio mu_2/mu_1 = 10, MUSCL-MC and pressure relaxation, to the steady
 # state.
@@ -39,8 +46,9 @@ ratio-01                max_step=20 prob.EOS.mu=0.1 0.01 prob.rho=10.0 1.0
 diffuse                 max_step=20 PhaseField.Eta_Multiplier=1.0
 # --- Scheme (three ghost cells through the user wall condition) and relaxation ---
 scheme-weno5            max_step=20 FiniteVolume.Scheme=WENO5
-no-relaxation           max_step=20 Physics.pressure_relaxation=0
 
+# Interface inside a cell: distinguish interface error from face-aligned traction.
+mid-cell                max_step=200 prob.h=0.515625
 # ===== Heat conduction between two materials (prob.problem = HeatConduction2Mat) =====
 
 [HeatConduction2Mat-5Eq]     BUILD=5Eq     inputs=prob/inputs.HeatConduction2Mat-5Eq
@@ -59,13 +67,18 @@ amr                     max_step=20 amr.max_level=1
 relax-p                 max_step=20 Physics.pressure_temperature_relaxation=0 Physics.pressure_relaxation=1
 
 [HeatConduction2Mat-6Eq-N]   BUILD=6Eq-N   inputs=prob/inputs.HeatConduction2Mat-6Eq-N
+relax-pt                max_step=20 Physics.Relaxation=PressureTemperature
+compatible-pt-id        max_step=20 Physics.CompatibleDiffusion=1 Physics.Relaxation=1
+compatible              max_step=1000000 Physics.CompatibleDiffusion=1 Physics.Relaxation=PressureTemperature
+# Current IE solver options; the final pressure/energy reset stays on in both.
+hllc-consistent        max_step=10 Physics.HLLCImplementation=Consistent
 # The base inputs use the N-phase six-equation model (NPHASE = 2) with DIFFUSION = true, an
-# interface one cell wide and pressure relaxation; no heat crosses the interface (no temperature
-# relaxation in this model).
+# interface one cell wide and pressure relaxation; no heat crosses the interface unless P-T and compatible diffusion are enabled.
 # --- A sharp interface (a step in alpha), and no relaxation ---
 sharp                   max_step=20 PhaseField.Eta_Multiplier=0.0
-no-relaxation           max_step=20 Physics.pressure_relaxation=0
 
+# Same material on both sides: isolate same-phase Fourier conduction.
+single-material         max_step=200 prob.single_material=1 prob.alpha_floor=0 0 prob.EOS.gamma=1.4 1.4 prob.EOS.cv=2.5 2.5 prob.EOS.kappa=0.0063 0.0063
 # ===== Viscous shock tube (prob.problem = ViscousShockTube) =====
 
 [ViscousShockTube-5Eq]       BUILD=5Eq     inputs=prob/inputs.ViscousShockTube-5Eq
@@ -79,10 +92,14 @@ quad                    max_step=10 FiniteVolume.Quad=1
 relax-pT                max_step=10 Physics.pressure_relaxation=0 Physics.pressure_temperature_relaxation=1
 
 [ViscousShockTube-6Eq-N]     BUILD=6Eq-N   inputs=prob/inputs.ViscousShockTube-6Eq-N
+compatible              max_step=1000000 Physics.CompatibleDiffusion=1 Physics.Relaxation=PressureTemperature
+# Current IE solver options; the final pressure/energy reset stays on in both.
+hllc-consistent        max_step=10 Physics.HLLCImplementation=Consistent
 # The base inputs use the N-phase six-equation model (NPHASE = 2) with DIFFUSION = true, WENO5,
 # HLLC and pressure relaxation.
-no-relaxation           max_step=10 Physics.pressure_relaxation=0
-riemann-hll             max_step=10 Physics.RiemannSolver=HLL
+riemann-hll             max_step=1000000 Physics.RiemannSolver=HLL
+low-cfl                 max_step=1000000 run.cfl=0.1 run.vnn=0.2
+first-order             max_step=1000000 FiniteVolume.Scheme=GODUNOV
 
 # ===== Viscous and conductive advection: a drop (prob.problem = AdvectionViscousDrop) and four
 # shapes in five materials (prob.problem = AdvectionViscousMaterials) =====
@@ -98,13 +115,18 @@ thinc                   max_step=10 FiniteVolume.THINC=1
 pf-off                  max_step=10 PhaseField.phase_field=0
 
 [Advection-Viscous-6Eq-N]    BUILD=6Eq-N3  inputs=prob/inputs.Advection-Viscous-6Eq-N
-# The base inputs use the N-phase six-equation model (NPHASE = 3, phase 3 absent) with
-# DIFFUSION = true, MUSCL-MC, HLLC, pressure relaxation and ACDI Phase-Field with the
-# explicit treatment.
+compatible              max_step=1000000 Physics.CompatibleDiffusion=1 Physics.Relaxation=PressureTemperature
+compatible-isothermal   max_step=1000000 Physics.CompatibleDiffusion=1 Physics.Relaxation=PressureTemperature prob.T0=10 run.do_subcycle=0
+# Current IE solver options; the final pressure/energy reset stays on in both.
+hllc-consistent        max_step=10 Physics.HLLCImplementation=Consistent
+# The baseline retains the upstream ACDI treatment.
 # --- Relaxation ---
 no-relaxation           max_step=10 Physics.pressure_relaxation=0
 # --- Interface treatment ---
-thinc                   max_step=10 FiniteVolume.THINC=1
 pf-off                  max_step=10 PhaseField.phase_field=0
+thinc                   max_step=10 FiniteVolume.THINC=1
+pf-acdi                 max_step=50 PhaseField.phase_field=1 PhaseField.Mechanism=ACDI
+pf-cdi                  max_step=50 PhaseField.phase_field=1 PhaseField.Mechanism=CDI
+amr                     max_step=50 amr.max_level=1
 
 [Advection-Viscous-5Eq-N]    BUILD=5Eq-N   inputs=prob/inputs.Advection-Viscous-5Eq-N

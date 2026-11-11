@@ -51,3 +51,5 @@ CEXE_headers += FVM_Conservative2FluxHyperbolic_K_Compressible6Eq_IE_NPhase.H
 CEXE_headers += FVM_SurfaceIntegralNC_Compressible6Eq_IE_NPhase.H
 
 CEXE_headers += FVM_Conservative2FluxPhaseField_K_Compressible6Eq_IE_NPhase_PhaseField.H
+
+CEXE_headers += FVM_LimitReconstructedPair_Compressible6Eq_IE_NPhase.H

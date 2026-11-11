@@ -85,6 +85,8 @@ drop-thinc        max_step=20 prob.problem=1 geometry.prob_lo=-1 -1 geometry.pro
 drop-pf-acdi      max_step=20 prob.problem=1 geometry.prob_lo=-1 -1 geometry.prob_hi=1 1 geometry.is_periodic=1 1 run.lo_bc=0 0 run.hi_bc=0 0 amr.n_cell=64 64 amr.blocking_factor_y=8 stop_time=4.0e-3 amr.t_write_interval=1.0e-3 PhaseField.phase_field=1
 
 [NASG-6Eq-N]  BUILD=6Eq-N   inputs=prob/inputs.NASG-6Eq-N
+# Current IE solver options; the final pressure/energy reset stays on in both.
+hllc-consistent        max_step=10 Physics.HLLCImplementation=Consistent
 # The base inputs are the air-water shock tube with NASG liquid water (Le Metayer and Saurel 2016).
 # water    the single-phase NASG water shock tube: rho = 1150 kg/m^3, P = 1e9 Pa for x < 0.5 and
 #          rho = 1050 kg/m^3, P = 1e5 Pa to the right, to t = 1.2e-4 s.

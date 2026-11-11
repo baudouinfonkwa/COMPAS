@@ -92,7 +92,7 @@ run.refine.P.grad        = 100.0 100.0 100.0 100.0 100.0 100.0 100.0 100.0
 amr.case_name        = ./plot/BubbleFreeSurface-WaterHeAir-6Eq-IE-NPHASE
 amr.plot_int         = 1000000
 amr.t_write_interval = 0.01                  # A plotfile every 0.01 time units
-run.output_vars      = a1 a2 a3 a1rho1 a2rho2 a3rho3 a1rho1e1 a2rho2e2 a3rho3e3 rho u v P a1p1 a2p2 a3p3
+run.output_vars = a1 a2 a3 a1rho1 a2rho2 a3rho3 a1rho1e1 a2rho2e2 a3rho3e3 rho_u rho_v rho_E rho u v P T c a1p1 a2p2 a3p3
 amr.chk_file         = ./checkpoints/chk
 amr.chk_int          = -1                    # No checkpoints
 run.user_output_int  = 1                     # Bubble size and centroid, free-surface height and peak pressure every coarse step
@@ -102,6 +102,9 @@ run.user_output_int  = 1                     # Bubble size and centroid, free-su
 # PHYSICS AND METHODS
 # =====================================================================
 Physics.pressure_relaxation = 1              # Instantaneous pressure relaxation
+Physics.Relaxation = Pressure  # Optional: PressureTemperature with DIFFUSION=true
+# Final common-pressure and phase-energy reset is always part of relaxation.
+Physics.HLLCImplementation      = ConservativePart  # Alternative: Consistent
 Physics.RiemannSolver       = "HLLC"
 
 FiniteVolume.Scheme = "MUSCL"
@@ -111,6 +114,9 @@ FiniteVolume.THINC.EPS       = 1.0e-5
 FiniteVolume.THINC.UseNormal = 1
 
 PhaseField.phase_field    = 0                # 1 for Phase-Field regularization of the interfaces
+PhaseField.ID_FluxPhase2Flux = 1           # Required mixture mapping for internal-energy states
+PhaseField.ID_Flux           = 0           # 0: UD, 1: HLL
+PhaseField.ID_Formulation    = 1           # 0: base, 1: efficient
 PhaseField.cfl            = 0.2              # Phase-Field settings used when phase_field = 1
 PhaseField.Mechanism      = "CDI"
 PhaseField.ID_ExplicitRC  = 1
@@ -129,3 +135,18 @@ prob.EOS.pinf  = 6.0e8 0.0 0.0
 
 prob.rho0 = 1000.0           # Reference density and water density, kg/m^3
 prob.P0   = 5.0e6            # Reference pressure and pressure of the water and air, Pa
+
+# Other EOS data, when selected, are also supplied in SI units and scaled in Parm.H:
+# prob.EOS.pref [Pa], prob.EOS.eref/prob.EOS.q [J/kg], prob.EOS.b [m^3/kg],
+# prob.EOS.cv [J/(kg K)]. Optional arrays require one entry per phase.
+# Pressure relaxation supports EOS 0/1/2/3; EOS 2 uses constant reference data.
+
+# Per-phase INITIAL volume-fraction floors; no clipping during transport.
+prob.alpha_floor = 1.e-12 1.e-12 1.e-12
+
+# Caloric EOS coefficients in J/(kg K), scaled in Parm.H.
+prob.EOS.cv = 1816 717.5 3120
+
+# Optional equilibrium mass transfer; requires calibrated EOS entropy data and P-T relaxation.
+Physics.ChemicalRelaxation = 0
+Physics.CompatibleDiffusion = 0  # Optional compatible face work/heat flux

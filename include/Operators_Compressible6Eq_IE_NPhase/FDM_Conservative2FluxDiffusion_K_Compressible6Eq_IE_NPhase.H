@@ -28,7 +28,8 @@ void FDM_Conservative2FluxDiffusion_K(int i, int j, int k,
                                       amrex::Real const& dz),
                                       amrex::Real const& time,
                                       Parm const& EOS_Parameter,
-                                      int ID_Dimension)
+                                      int ID_Dimension,
+                                      SixEqIEDiffusionFace* face_data=nullptr)
 {
     amrex::ignore_unused(prob_lo, time);
 
@@ -46,7 +47,7 @@ void FDM_Conservative2FluxDiffusion_K(int i, int j, int k,
                                      Conservative_s,
                         AMREX_D_DECL(dx, dy, dz),
                                      EOS_Parameter,
-                                     ID_Dimension);
+                                     ID_Dimension,face_data);
 }
 
 #endif

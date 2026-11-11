@@ -10,6 +10,8 @@
 #include<Macros.H>
 #if (PHYSICS==SIXEQS_IE_NPHASE)
 
+// Component-wise fifth-order WENO with an admissible two-face polynomial.
+// The convex limiter is inactive on smooth states inside the EOS domain.
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
 void FVM_Reconstruction2Face_Conservative_WENO5_D(amrex::Array<amrex::Real,NSTATE>& Conservative_Face,
@@ -22,58 +24,18 @@ void FVM_Reconstruction2Face_Conservative_WENO5_D(amrex::Array<amrex::Real,NSTAT
                                                   amrex::Real const& dx,
                                                   int ID_Face)
 {
-    amrex::Array<amrex::Real,NSTATE> Primitive_mm;
-    Conservative2Primitive(Primitive_mm,
-                           Conservative_mm,
-                           EOS_Parameter);
-    amrex::Array<amrex::Real,NSTATE> Primitive_m;
-    Conservative2Primitive(Primitive_m,
-                           Conservative_m,
-                           EOS_Parameter);
-    amrex::Array<amrex::Real,NSTATE> Primitive_c;
-    Conservative2Primitive(Primitive_c,
-                           Conservative_c,
-                           EOS_Parameter);
-    amrex::Array<amrex::Real,NSTATE> Primitive_p;
-    Conservative2Primitive(Primitive_p,
-                           Conservative_p,
-                           EOS_Parameter);
-    amrex::Array<amrex::Real,NSTATE> Primitive_pp;
-    Conservative2Primitive(Primitive_pp,
-                           Conservative_pp,
-                           EOS_Parameter);
-    
-    amrex::Array<amrex::Real,NSTATE> Primitive_Face;
-    for (int i_State = 0; i_State < NSTATE; i_State++){
-        amrex::Real f_mm = Primitive_mm[i_State];
-        amrex::Real f_m  = Primitive_m [i_State];
-        amrex::Real f_c  = Primitive_c [i_State];
-        amrex::Real f_p  = Primitive_p [i_State];
-        amrex::Real f_pp = Primitive_pp[i_State];
-        
-        amrex::Real f_Face;
-        Reconstruction2Face_WENO5_D(f_Face,
-                                    f_mm, f_m, f_c, f_p, f_pp,
-                                    ID_Face);
-        Primitive_Face[i_State] = f_Face;
+    amrex::Array<amrex::Real,NSTATE> stencil[5];
+    amrex::Array<amrex::Real,NSTATE> const* u[5]={&Conservative_mm,&Conservative_m,&Conservative_c,&Conservative_p,&Conservative_pp};
+    for(int j=0;j<5;++j){
+        Conservative2Primitive(stencil[j],*u[j],EOS_Parameter);
+        for(int l=0;l<NPHASE;++l)
+            stencil[j][2*NPHASE+l]=stencil[j][l]>0.?stencil[j][2*NPHASE+l]/stencil[j][l]:std::max(stencil[j][NSTATE-1],-EOS_Parameter.B[l]/(EOS_Parameter.A[l]+1.));
     }
-
-    Primitive2Conservative(Conservative_Face,
-        Primitive_Face,
-        EOS_Parameter);
-    
-    //Consistent limiter
-    // amrex::Array<amrex::Real,NSTATE> Conservative_UnLimit;
-    // Primitive2Conservative(Conservative_UnLimit,
-    //                        Primitive_Face,
-    //                        EOS_Parameter);
-    // FVM_Reconstruction2Face_Conservative_LimiterConsistent(Conservative_Face,
-    //                                                        Conservative_UnLimit,
-    //                                                        Conservative_c,
-    //                                                        EOS_Parameter,
-    //                                                        dx,
-    //                                                        ID_Face);
-    
+    amrex::Array<amrex::Real,NSTATE> face[2],limited[2];
+    for(int side=0;side<2;++side)for(int n=0;n<NSTATE;++n)
+        Reconstruction2Face_WENO5_D(face[side][n],stencil[0][n],stencil[1][n],stencil[2][n],stencil[3][n],stencil[4][n],side==0?1:-1);
+    SixEqIE_LimitReconstructedPair(limited[0],limited[1],face[0],face[1],Conservative_c,EOS_Parameter,1./12.);
+    Conservative_Face=limited[ID_Face==1?0:1];
 }
 
 #endif

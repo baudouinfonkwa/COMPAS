@@ -96,9 +96,9 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
                     P,
                     Alpha);
 #elif (PHYSICS == SIXEQS_IE_NPHASE)
-    const amrex::Real eps = 1.0e-6; // Trace of the second phase
-    amrex::Array<amrex::Real, NPHASE> Alpha = (mat == 1) ? amrex::Array<amrex::Real, NPHASE>{1.0 - eps, eps}
-                                                         : amrex::Array<amrex::Real, NPHASE>{eps, 1.0 - eps};
+    amrex::Array<amrex::Real,NPHASE> Alpha=(mat==1)?amrex::Array<amrex::Real,NPHASE>{1.,0.}
+                                                         :amrex::Array<amrex::Real,NPHASE>{0.,1.};
+    parm.ApplyInitialAlphaFloor(Alpha);
     amrex::Array<amrex::Real, NPHASE> Alpha_rho;
     amrex::Array<amrex::Real, NPHASE> Alpha_P;
     for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){

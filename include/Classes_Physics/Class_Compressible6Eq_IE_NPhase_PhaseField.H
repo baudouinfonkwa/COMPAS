@@ -60,10 +60,10 @@ public:
     Relaxation_Pressure (MultiFab& mf,
 				         Parm const* parm);
 
-    // Relaxes the cells of mf that differ from state_unrefluxed (the cells the reflux corrected)
+    // Relax only changed coarse cells not covered by the next finer level.
     void
     RelaxRefluxedCells (MultiFab& mf,
-                        MultiFab const& state_unrefluxed);
+                        MultiFab const& state_unrefluxed, int lev);
 
 };
 

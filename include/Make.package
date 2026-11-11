@@ -65,3 +65,4 @@ CEXE_HEADERS += Operators_Compressible6Eq_IE_NPhase_PhaseField.H
 CEXE_HEADERS += Physics_DerivedClasses.H
 
 CEXE_HEADERS += IncludeOperators.H
+CEXE_headers += SixEqIE_DiffusionTimeStep.H

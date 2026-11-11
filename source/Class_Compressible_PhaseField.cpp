@@ -3213,6 +3213,9 @@ BL_PROFILE("ComputeFaceFluxes()");
 #if (DIFFUSION == true)
                     Array<Real,NSTATE> fhatD;
                     amrex::Real dmax;
+#if PHYSICS == SIXEQS_IE_NPHASE
+                    SixEqIEDiffusionFace diffusion_data;
+#endif
 #if (PHYSICS == SIXEQS)
                     // SIXEQS also writes the viscous energy flux to a non-conservative component
                     FDM_Conservative2FluxDiffusion_K(i, j, k,
@@ -3231,7 +3234,18 @@ BL_PROFILE("ComputeFaceFluxes()");
                                         AMREX_D_DECL(dx,dy,dz),
                                                      time,
                                                      *lparm,
-                                                     idim);
+                                                     idim
+#if PHYSICS == SIXEQS_IE_NPHASE
+                                                     , &diffusion_data
+#endif
+                                                     );
+#endif
+#if PHYSICS == SIXEQS_IE_NPHASE
+                    for(int n=1;n<NC_TERMS;++n)fhatNC[n]=0.;
+                    if(lparm->Physics_Parm.compatible_diffusion){
+                        for(int b=0;b<AMREX_SPACEDIM;++b)fhatNC[IE_NC_TRACTION+b]=diffusion_data.traction[b];
+                        fhatNC[IE_NC_WORK]=diffusion_data.work;fhatNC[IE_NC_HEAT]=diffusion_data.heat;
+                    }
 #endif
                     c_max_new(i,j,k,1) = std::max(dmax, c_max_new(i,j,k,1));
 #endif
@@ -4489,11 +4503,20 @@ Compressible_PhaseField::EstTimeStep (Real& dt_est, int lev, Real const& time)
         // Real est = facevel[lev][idim].norminf(0,0,true);
         Real est_adv = c_max[lev].norminf(0,0,true);
         dt_est = amrex::min(dt_est, cfl*dx[idim]/est_adv);
+#if PHYSICS == SIXEQS_IE_NPHASE
+        dt_est=amrex::min(dt_est,SixEqIE_WENOTimeStep(est_adv,dx,AMREX_SPACEDIM,
+            h_parm->FiniteVolume_Parm.ID_WENO,h_parm->FiniteVolume_Parm.ID_Limiter,
+            h_parm->FiniteVolume_Parm.ID_Poly));
+#endif
 #endif
 
 #if (DIFFUSION==true)
         Real est_diff = c_max[lev].norminf(1,0,true);
+#if PHYSICS == SIXEQS_IE_NPHASE
+        dt_est = amrex::min(dt_est,SixEqIE_DiffusionTimeStep(est_diff,vnn,dx,AMREX_SPACEDIM));
+#else
         dt_est = amrex::min(dt_est, vnn*dx[idim]*dx[idim]/est_diff);
+#endif
 #endif
     }
 }
@@ -4505,6 +4528,9 @@ Compressible_PhaseField::CalculateInitialcmax (int lev)
     const int num_grow = NGROW;
 
     Real time = 0.0;
+#if PHYSICS == SIXEQS_IE_NPHASE
+    if(h_parm->Physics_Parm.PressureTemperatureRelaxation())time=t_new[lev];
+#endif
     const Real dx = geom[lev].CellSize(0);
 #if (AMREX_SPACEDIM > 1)
     const Real dy = geom[lev].CellSize(1);
@@ -4569,6 +4595,9 @@ Compressible_PhaseField::CalculateInitialcmax (int lev)
 #if (DIFFUSION==true)
                     Array<Real,NSTATE> fhatD;
                     amrex::Real dmax;
+#if PHYSICS == SIXEQS_IE_NPHASE
+                    SixEqIEDiffusionFace diffusion_data;
+#endif
 {BL_PROFILE("compute_dUdt_FV::{ computing the idim-direction parabolic fluxes }");
 #if (PHYSICS == SIXEQS)
                     FDM_Conservative2FluxDiffusion_K(i, j, k,
@@ -4587,7 +4616,11 @@ Compressible_PhaseField::CalculateInitialcmax (int lev)
                                         AMREX_D_DECL(dx,dy,dz),
                                                      time,
                                                      *lparm,
-                                                     idim);
+                                                     idim
+#if PHYSICS == SIXEQS_IE_NPHASE
+                                                     , &diffusion_data
+#endif
+                                                     );
 #endif
 }
                     c_max_new(i,j,k,1) = std::max(dmax, c_max_new(i,j,k,1));

@@ -10,6 +10,11 @@
 #include<Macros.H>
 #if (PHYSICS==SIXEQS_IE_NPHASE && DIFFUSION == true)
 
+struct SixEqIEDiffusionFace {
+    amrex::Array<amrex::Real,AMREX_SPACEDIM> traction{};
+    amrex::Real work=0.,heat=0.;
+};
+
 // =======================================
 // Viscous and conductive face flux of the N-phase six-equation model (internal energy form),
 // face normal e_d (d = ID_Dimension). The core solves U_t = -div(F - F_D) with F_D this flux.

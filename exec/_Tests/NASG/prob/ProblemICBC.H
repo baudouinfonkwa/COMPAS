@@ -22,24 +22,37 @@
 // 0  Shock tube along x: material prob.mat_L at (prob.rho_L, prob.u_L, prob.P_L) for
 //    x < prob.x_diaphragm and material prob.mat_R at (prob.rho_R, prob.u_R, prob.P_R) to the
 //    right. The other material is absent (alpha = 0 exactly) in the two-phase five-equation
-//    model, and a trace (alpha = 1e-6) with the same density and pressure in the other models.
+//    model. The IE model uses prob.alpha_floor; other builds retain their legacy traces.
 //    The base inputs are air (ideal gas) at 1e9 Pa against liquid water (NASG) at 1e5 Pa.
 // 1  Drop: a disk of material 1 of radius prob.R_drop centered at the origin, in material 2,
 //    as a tanh profile of width eta = PhaseField.Eta_Multiplier finest cells, kept eps/2
-//    (eps = 1e-12) away from 0 and 1. Both materials are at prob.P_drop and prob.T_drop and
+//    (eps = 1e-12) away from 0 and 1 in legacy builds; the IE build uses prob.alpha_floor.
+//    Both materials are at prob.P_drop and prob.T_drop and
 //    move with (prob.u_drop, prob.u_drop). The phase densities follow from the EOS,
 //    rho_k = 1/(b_k + (gamma_k - 1) cv_k T/(P + pinf_k)), so they are uniform, in the traces
 //    too, and exact advection keeps the pressure and the velocity uniform (Abgrall, JCP 125, 1996).
 // =======================================
 
-// Phase density at pressure P and temperature T (NASG; the stiffened gas for b = 0)
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-amrex::Real PhaseDensity_PT (amrex::Real P, amrex::Real T, amrex::Real gamma, amrex::Real pinf,
-                             amrex::Real b, amrex::Real cv)
+// EOS-consistent density at prescribed P,T. Evaluating the affine EOS at
+// alpha=1,m=0 isolates its thermal-pressure coefficient without a rho division.
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+AMREX_GPU_DEVICE AMREX_FORCE_INLINE
+amrex::Real PhaseDensity_PT(amrex::Real P,amrex::Real T,int phase,Parm const& parm)
 {
-    return 1.0/(b + (gamma - 1.0)*cv*T/(P + pinf));
+    amrex::Real H,rhoT;
+    EquationOfState_Phase(H,P,1.,0.,parm,phase,true,true);
+    EquationOfState_Phase(rhoT,H,1.,0.,parm,phase,false,false);
+    if(!(T>0.) || !(rhoT>0.))amrex::Abort("NASG drop: inadmissible prescribed pressure/temperature");
+    return rhoT/(T+parm.C[phase]*rhoT);
 }
+#else
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+amrex::Real PhaseDensity_PT(amrex::Real P,amrex::Real T,amrex::Real gamma,
+                            amrex::Real pinf,amrex::Real b,amrex::Real cv)
+{
+    return 1.0/(b+(gamma-1.)*cv*T/(P+pinf));
+}
+#endif
 
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
@@ -66,9 +79,14 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
         // Drop
         // ---------------------------------------
         const amrex::Real eta = parm.PhaseField_Parm.Eta_Multiplier * dx_FinestLevel;
-        const amrex::Real eps = 1.0e-12;
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+        const amrex::Real eps=0.;
+#else
+        const amrex::Real eps=1.e-12;
+#endif
         const amrex::Real psi = parm.R_drop - std::sqrt(AMREX_D_TERM(x*x, + y*y, + z*z));
-        const amrex::Real Alpha1 = 0.5*(1.0 + std::tanh( psi/(std::sqrt(2.0)*eta) )*(1.0 - eps));
+        const amrex::Real indicator = eta>0. ? std::tanh(psi/(std::sqrt(2.0)*eta)) : (psi>=0.?1.:-1.);
+        const amrex::Real Alpha1 = 0.5*(1.0+indicator*(1.0-eps));
         const amrex::Real Alpha2 = 1.0 - Alpha1;
         const amrex::Real P  = parm.P_drop;
         const amrex::Real U0 = parm.u_drop;
@@ -90,10 +108,17 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
                         Alpha1);
 #else
         amrex::Array<amrex::Real, NPHASE> Alpha = {Alpha1, Alpha2};
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+        parm.ApplyInitialAlphaFloor(Alpha);
+#endif
         amrex::Array<amrex::Real, NPHASE> Alpha_rho;
         for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
-            Alpha_rho[i_Phase] = Alpha[i_Phase]*PhaseDensity_PT(P, parm.T_drop, parm.gamma[i_Phase], parm.pinf[i_Phase],
-                                                                parm.C[i_Phase], parm.cv[i_Phase]);
+            #if (PHYSICS == SIXEQS_IE_NPHASE)
+            Alpha_rho[i_Phase] = Alpha[i_Phase]*PhaseDensity_PT(P,parm.T_drop,i_Phase,parm);
+#else
+            Alpha_rho[i_Phase] = Alpha[i_Phase]*PhaseDensity_PT(P,parm.T_drop,parm.gamma[i_Phase],parm.pinf[i_Phase],
+                                                             parm.C[i_Phase],parm.cv[i_Phase]);
+#endif
         }
 #if (PHYSICS == FIVEEQS_NPHASE)
         State2Primitive(Primitive,
@@ -102,7 +127,7 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
                         P,
                         Alpha);
 #else
-        amrex::Array<amrex::Real, NPHASE> Alpha_P = {Alpha1*P, Alpha2*P};
+        amrex::Array<amrex::Real, NPHASE> Alpha_P = {Alpha[0]*P, Alpha[1]*P};
         State2Primitive(Primitive,
                         Alpha, Alpha_rho, Alpha_P,
            AMREX_D_DECL(U0, U0, 0.0),
@@ -135,9 +160,16 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
                         Alpha1*P, (1.0 - Alpha1)*P,
                         Alpha1);
 #else
-        const amrex::Real eps = 1.0e-6; // Trace of the other material
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+        const amrex::Real eps=0.;
+#else
+        const amrex::Real eps=1.e-6;
+#endif
         amrex::Array<amrex::Real, NPHASE> Alpha = (mat == 1) ? amrex::Array<amrex::Real, NPHASE>{1.0 - eps, eps}
                                                              : amrex::Array<amrex::Real, NPHASE>{eps, 1.0 - eps};
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+        parm.ApplyInitialAlphaFloor(Alpha);
+#endif
 #if (PHYSICS == FIVEEQS_NPHASE)
         amrex::Array<amrex::Real, NPHASE> Alpha_rho;
         for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){

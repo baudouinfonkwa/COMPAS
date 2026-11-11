@@ -83,6 +83,29 @@ void FVM_SurfaceIntegral_NC(int i, int j, int k,
     #endif
 
 #if (DIFFUSION == true)
+    if(Physics_Parm.compatible_diffusion){
+        using amrex::Real;
+        amrex::Array<Real,NSTATE> state;
+        for(int c=0;c<NSTATE;++c)state[c]=dof_in(i,j,k,c);
+        amrex::Array<Real,AMREX_SPACEDIM> vel;
+        Conservative2Velocity(AMREX_D_DECL(vel[0],vel[1],vel[2]),state);
+        const amrex::Array<amrex::Array4<Real const>,AMREX_SPACEDIM> nc={AMREX_D_DECL(flxx_NC,flxy_NC,flxz_NC)};
+        const amrex::Array<Real,AMREX_SPACEDIM> width={AMREX_D_DECL(dx,dy,dz)};
+        Real thermal_rhs=0.,capacity=0.;
+        for(int d=0;d<AMREX_SPACEDIM;++d){
+            const int ip=i+(d==0),jp=j+(d==1),kp=k+(d==2);
+            Real difference=nc[d](ip,jp,kp,IE_NC_WORK)+nc[d](ip,jp,kp,IE_NC_HEAT)
+                           -nc[d](i,j,k,IE_NC_WORK)-nc[d](i,j,k,IE_NC_HEAT);
+            for(int b=0;b<AMREX_SPACEDIM;++b)
+                difference-=vel[b]*(nc[d](ip,jp,kp,IE_NC_TRACTION+b)-nc[d](i,j,k,IE_NC_TRACTION+b));
+            thermal_rhs+=difference/width[d];
+        }
+        for(int l=0;l<NPHASE;++l)capacity+=state[INDEX_Mass1+l]*EOS_Parameter.cv[l];
+        if(!(capacity>0.))amrex::Abort("SixEq IE compatible diffusion: invalid source heat capacity");
+        for(int l=0;l<NPHASE;++l)
+            dof_out(i,j,k,INDEX_Energy1+l)+=state[INDEX_Mass1+l]*EOS_Parameter.cv[l]/capacity*thermal_rhs;
+        return;
+    }
     // Viscous dissipation of each phase internal energy, alpha_k Phi_k with Phi_k = tau_k : grad u
     // (Huang, arXiv:2609.18085, Eq. 20). The conservative viscous flux u.tau goes to rho E
     // (FluxDiffusion_Compressible6Eq_IE_NPhase.H). Only a phase with mass takes a share

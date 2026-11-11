@@ -7,6 +7,46 @@ under "Case interface", with a short before-and-after example.
 
 First public release.
 
+### IE advection admissibility
+
+- Fixed inconsistent WENO3B/WENO5B phasic pressure reconstruction near disappearing
+  phases. Added shared convex polynomial limiting to IE WENO5 and EOS-domain
+  checks of the interior reconstruction quadrature state. Cell averages are not
+  clipped or floored; the existing relaxation checks remain enabled.
+- IE WENO3B/WENO5/WENO5B now respect the multidimensional reconstruction-quadrature
+  timestep cap. The five-material advection benchmark uses synchronized AMR
+  stages with both refinement levels, avoiding the known subcycled reflux
+  positivity failure. The general subcycled algorithm is unchanged.
+- Added native EOS/trace/smooth-order tests and equal-time AMR advection audits of
+  partial-mass, energy, phase-volume, pressure and velocity preservation.
+
+### IE N-phase relaxation update
+
+- `SIXEQS_IE_NPHASE`: generalized pressure, joint pressure-temperature and optional
+  same-substance chemical equilibrium for EOS 0–3. Added the HLLC formulation
+  selector and opt-in compatible diffusion. No separate thermal-energy correction
+  is included. Existing application directories are refactored in place.
+- Invalid relaxation states are rejected; a successful build is not a guarantee
+  that an arbitrary reconstruction, CFL or AMR configuration remains admissible.
+
+### Case interface
+
+- IE EOS lists now require exactly `NPHASE` entries, finite positive `cv`, and
+  valid transport coefficients. Before: a short `prob.EOS.cv = 1` list in a
+  two-phase case could leave entries unset. After: `prob.EOS.cv = 1 1`.
+- IE initialization floors are explicit: `prob.alpha_floor = 1e-6 1e-6` replaces
+  hard-coded symmetric traces, using the affine normalized floor rule documented
+  in the inputs guide. Defaults retain the existing case's intended trace levels.
+- IE no longer accepts nonzero `Physics.pressure_relaxation_trace`. Before:
+  `Physics.pressure_relaxation_trace = 1e-8`. After: remove that key; every positive
+  phase participates in pressure relaxation.
+- IE `run.vnn` now denotes a fraction of the multidimensional explicit diffusion
+  limit. Before on a square 2D mesh: `run.vnn = 0.2`. After for the same bound:
+  `run.vnn = 0.8`. Other models retain their previous definition.
+- `StiffenedShockConditions` retains its original gamma/pinf signature and adds
+  an affine-EOS overload `(Mach,u0,p0,rho0,A,B,b,D,result)` for EOS 0–3. Use
+  coefficients and state variables in the same units.
+
 ### Added
 
 - Viscous and conductive fluxes for the six-equation models: `-DDIFFUSION=true` now builds
@@ -15,7 +55,7 @@ First public release.
   energy stay conservative, also across AMR levels. The face viscosity is the harmonic mean of
   the mixture viscosities of the two cells, and with the pressure-temperature relaxation of
   `SIXEQS` the face conductivity is the harmonic mean of the cell conductivities. Without that
-  relaxation, and always in `SIXEQS_IE_NPHASE`, heat does not pass from one phase to another (such
+  relaxation or IE compatible diffusion, heat does not pass from one phase to another (such
   a run prints a warning when a conductivity is nonzero). See
   [Viscous and conductive fluxes in the six-equation models](docs/user-guide/models.md#viscous-and-conductive-fluxes-in-the-six-equation-models).
   The previous `SIXEQS_IE_NPHASE` diffusion kernels, which did not compile with the core, are
@@ -35,7 +75,7 @@ First public release.
   `HeatConduction2Mat-6Eq`, `HeatConduction2Mat-6Eq-N` (conduction between two materials), with
   a `mid-cell` variant of `Couette2Layer-6Eq` (the interface inside a cell). `Sod-6Eq` has a
   `water-air-512` variant (the water-air shock tube on 512 uniform cells).
-- `Physics.pressure_relaxation_trace` (six-equation models, default `0`): a phase with
+- `Physics.pressure_relaxation_trace` (`SIXEQS` only, default `0`): a phase with
   $0 < \alpha_k \le$ this value keeps its volume fraction in the pressure relaxation and reaches
   the common pressure through its energy. See
   [Safeguarded pressure relaxation](docs/user-guide/models.md#safeguarded-pressure-relaxation).

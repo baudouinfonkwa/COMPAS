@@ -26,8 +26,8 @@ static_assert(NPHASE >= 2, "AdvectionViscousDrop needs at least two phases.");
 // gas, phase 1 (density prob.rho_1), at the uniform pressure prob.P0 and velocity
 // (prob.u0, prob.v0). The volume fraction is a tanh profile of width eta about the signed
 // distance, kept eps/2 away from 0 and 1. In the N-phase model, phases 3 to NPHASE are absent:
-// their volume fraction, partial density and internal energy are exactly 0, and they must
-// stay so. Each present phase has a uniform density, so its temperature is uniform too, and
+// their default floors are zero, so their fraction, partial mass and energy remain zero.
+// A positive prob.alpha_floor deliberately activates them; prob.rho supplies their densities. Each present phase has a uniform density, so its temperature is uniform too, and
 // the two temperatures differ. With viscosity and heat conduction, the exact solution is still
 // a translation: the velocity is uniform, so the stress vanishes, and each phase temperature
 // is uniform, so no phase conducts heat (Abgrall, JCP 125, 1996).
@@ -35,6 +35,18 @@ static_assert(NPHASE >= 2, "AdvectionViscousDrop needs at least two phases.");
 
 // Temperature of phase ID_Phase (1 or 2 in SIXEQS, from 0 in the N-phase model) at the pressure
 // P0 and the density rho, from its EOS
+#if PHYSICS == SIXEQS_IE_NPHASE
+AMREX_GPU_DEVICE
+AMREX_FORCE_INLINE
+amrex::Real DropTemperature(int ID_Phase, amrex::Real rho, Parm const& parm)
+{
+    amrex::Real H,rhoT;
+    EquationOfState_Phase(H,parm.P0,1.,rho,parm,ID_Phase,true,true);
+    EquationOfState_Phase(rhoT,H,1.,rho,parm,ID_Phase,false,false);
+    return rhoT/rho;
+}
+
+#else
 AMREX_GPU_HOST_DEVICE
 AMREX_FORCE_INLINE
 amrex::Real DropTemperature(int ID_Phase, amrex::Real rho, Parm const& parm)
@@ -50,6 +62,8 @@ amrex::Real DropTemperature(int ID_Phase, amrex::Real rho, Parm const& parm)
 #endif
     return (A*parm.P0 + A*B/(1.0 + A))/(cv*rho);
 }
+
+#endif
 
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
@@ -82,11 +96,12 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
     for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
         Alpha[i_Phase] = 0.0;
     }
-    Alpha[1] = 0.5*(1.0 + std::tanh( psi/(std::sqrt(2.0)*eta) )*(1.0 - eps) );
+    Alpha[1] = eta>0. ? 0.5*(1.+std::tanh(psi/(std::sqrt(2.)*eta))) : (psi>=0.?1.:0.);
     Alpha[0] = 1.0 - Alpha[1];
+    parm.ApplyInitialAlphaFloor(Alpha);
     const amrex::Real P = parm.P0;
     for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
-        const amrex::Real rho_k = (i_Phase == 0) ? parm.rho_1 : ((i_Phase == 1) ? parm.rho_2 : 0.0);
+        const amrex::Real rho_k = parm.rho_phase[i_Phase];
         Alpha_rho[i_Phase] = Alpha[i_Phase]*rho_k;
         Alpha_P  [i_Phase] = Alpha[i_Phase]*P;
     }
@@ -128,7 +143,7 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
 //   dT_1, dT_2            max |T_k - T_k0|/T_k0 over the cells with alpha_k > 0.01, with T_k0 the
 //                         initial temperature of phase k
 //   absent                (N-phase model only) max over the phases 3 to NPHASE of |alpha_k|,
-//                         |alpha_k rho_k| and |alpha_k rho_k e_k|, which must stay exactly 0
+//                         |alpha_k rho_k| and |alpha_k rho_k e_k|, exactly 0 with default zero floors
 //   mass_1, mass_2        int alpha_k rho_k dV
 //   energy                int rho E dV (int (alpha_1 rho_1 E_1 + alpha_2 rho_2 E_2) dV in SIXEQS)
 // The integrals and the extrema are over the composite grid. Exact advection keeps the uniform

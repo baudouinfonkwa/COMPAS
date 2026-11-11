@@ -42,6 +42,8 @@ water-air max_step=20 prob.rho_L=1000 prob.P_L=1e9 prob.rho_R=50 prob.P_R=1e5 pr
 water-air-512 max_step=20 amr.max_level=0 amr.n_cell=512 4 4 prob.rho_L=1000 prob.P_L=1e9 prob.rho_R=50 prob.P_R=1e5 prob.mat_R=2 prob.x_diaphragm=0.7 prob.EOS.gamma_1=4.4 prob.EOS.pinf_1=6e8 prob.EOS.gamma_2=1.4 prob.EOS.pinf_2=0.0
 
 [Sod-6Eq-N]  BUILD=6Eq-N   inputs=prob/inputs.Sod-6Eq-N
+# Current IE solver options; the final pressure/energy reset stays on in both.
+hllc-consistent        max_step=10 Physics.HLLCImplementation=Consistent
 # The base inputs run the shock tube along x with outflow boundaries. dir-y and dir-z run it
 # along y and z, and walls closes it with slip walls in x, symmetry in y and no-slip walls in z.
 # water-air is the two-material shock tube with stiffened-gas water (rho 1000, P 1e9, gamma 4.4,

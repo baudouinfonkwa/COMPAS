@@ -25,8 +25,8 @@ void VectorPhase2Vector(amrex::Array<amrex::Real, NSTATE>& Vector,
     amrex::Array<amrex::Real,NPHASE> Momentum_z;
 #endif
     amrex::Array<amrex::Real,NPHASE> Energy;
-    VectorPhase2Component(VolumeFraction,
-                          Mass,
+
+    VectorPhase2Component(Mass,
                           Momentum_x,
 #if (AMREX_SPACEDIM > 1)
                           Momentum_y,
@@ -35,6 +35,7 @@ void VectorPhase2Vector(amrex::Array<amrex::Real, NSTATE>& Vector,
                           Momentum_z,
 #endif
                           Energy,
+                          VolumeFraction,
                           VectorPhase);
     
     amrex::Real TotalMomentum_x = 0.0;

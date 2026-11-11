@@ -26,7 +26,8 @@ void FDM_Conservative2FluxDiffusion_D(amrex::Array<amrex::Real,NSTATE>& Flux,
                                       amrex::Real const& dy,
                                       amrex::Real const& dz),
                                       Parm const& EOS_Parameter,
-                                      int ID_Dimension)
+                                      int ID_Dimension,
+                                      SixEqIEDiffusionFace* face_data=nullptr)
 {
     // Velocity at the stencil cells
     amrex::Array<amrex::Array<amrex::Real,FaceStencil::N>,AMREX_SPACEDIM> V;
@@ -54,6 +55,16 @@ void FDM_Conservative2FluxDiffusion_D(amrex::Array<amrex::Real,NSTATE>& Flux,
     Conservative2PhaseTemperature(T_m, Present_m, Conservative_m, EOS_Parameter);
     Conservative2PhaseTemperature(T_c, Present_c, Conservative_c, EOS_Parameter);
 
+    if(EOS_Parameter.Physics_Parm.compatible_diffusion){
+        // The one-temperature mode has no arbitrary alpha cutoff. Positive
+        // trace masses contribute their heat capacity and EOS temperature.
+        for(int l=0;l<NPHASE;++l){
+            const auto m=Conservative_m[INDEX_Mass1+l],c=Conservative_c[INDEX_Mass1+l];
+            if(m>0.){amrex::Real mt;EquationOfState_Phase(mt,Conservative_m[INDEX_Energy1+l],Conservative_m[l],m,EOS_Parameter,l,false,false);T_m[l]=mt/m;}
+            if(c>0.){amrex::Real mt;EquationOfState_Phase(mt,Conservative_c[INDEX_Energy1+l],Conservative_c[l],c,EOS_Parameter,l,false,false);T_c[l]=mt/c;}
+        }
+    }
+
     amrex::Array<amrex::Real,NPHASE> Alpha_m, Alpha_c, Alpha_rho_m, Alpha_rho_c;
     amrex::Real rho_m = 0.0;
     amrex::Real rho_c = 0.0;
@@ -78,7 +89,7 @@ void FDM_Conservative2FluxDiffusion_D(amrex::Array<amrex::Real,NSTATE>& Flux,
                         Present_m, Present_c,
            AMREX_D_DECL(dx, dy, dz),
                         EOS_Parameter,
-                        ID_Dimension);
+                        ID_Dimension,face_data);
 }
 
 #endif

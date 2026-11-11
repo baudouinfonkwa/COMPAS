@@ -7,6 +7,12 @@
 #ifndef PARM_H_
 #define PARM_H_
 
+// EOS pressure/energy inputs are SI; entropy reference data use the same units.
+#define PARM_EOS_SI_UNITS
+
+#include <cmath>
+#include <string>
+#include <vector>
 #include <AMReX_REAL.H>
 #include <AMReX_Gpu.H>
 #include <AMReX_GpuMemory.H>
@@ -20,6 +26,9 @@
 #include <PhaseField_Parameter.H>
 #include <LinearSystem_Parameter.H>
 
+// COMPAS calls Initialize again after DynamicInit; apply case units after
+// every raw-EOS initialization, rather than scaling coefficients only once.
+#define PARM_POST_EOS_INITIALIZE
 struct Parm
 {
     //
@@ -52,6 +61,37 @@ struct Parm
     amrex::Array<amrex::Real, NPHASE> gamma, pinf, gGamma, pref, eref, cv, mu, muB, kappa;
 
 
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+    // Initial fractions: f_k + (1-sum f) alpha_raw,k. Not a transport clamp.
+    amrex::Array<amrex::Real,NPHASE> alpha_floor = [] {
+        amrex::Array<amrex::Real,NPHASE> values{};values.fill(0.);return values;
+    }();
+    amrex::Real alpha_available=1.;
+
+    void ReadInitialAlphaFloor()
+    {
+        amrex::ParmParse pp("prob");
+        if(pp.contains("alpha_floor") && pp.countval("alpha_floor")!=NPHASE)
+            amrex::Abort("prob.alpha_floor requires exactly NPHASE values");
+        std::vector<amrex::Real> values(alpha_floor.begin(),alpha_floor.end());
+        pp.queryarr("alpha_floor",values);
+        amrex::Real sum=0.;
+        for(int l=0;l<NPHASE;++l){
+            if(!(values[l]>=0.) || !std::isfinite(values[l]))
+                amrex::Abort("prob.alpha_floor requires finite nonnegative values for every phase");
+            alpha_floor[l]=values[l];sum+=values[l];
+        }
+        if(!(sum<1.))amrex::Abort("prob.alpha_floor values must sum to less than one");
+        alpha_available=1.-sum;
+    }
+
+    AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+    void ApplyInitialAlphaFloor(amrex::Array<amrex::Real,NPHASE>& alpha) const
+    {
+        for(int l=0;l<NPHASE;++l)alpha[l]=alpha_floor[l]+alpha_available*alpha[l];
+    }
+#endif
+
     //
     // Governing equation parameters
     //
@@ -73,6 +113,10 @@ struct Parm
     //
     // Initialization routine
     //
+    void PostEOSInitialize()
+    {
+        if(EOS==3)for(int l=0;l<NPHASE;++l){C[l]*=rho0;D[l]*=rho0/P0;}
+    }
     void Initialize();
     #define DYNAMIC_INIT
     void DynamicInit();
@@ -81,23 +125,39 @@ struct Parm
 AMREX_FORCE_INLINE
 void Parm::DynamicInit ()
 {
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+   ReadInitialAlphaFloor();
+#endif
    amrex::ParmParse pp("prob.EOS");
 
-   std::vector<amrex::Real> gammaV(NPHASE), pinfV(NPHASE), gGammaV(NPHASE), prefV(NPHASE), erefV(NPHASE), cvV(NPHASE), muV(NPHASE), muBV(NPHASE), kappaV(NPHASE);
+   // Optional coefficients have physical defaults; every supplied array must
+   // contain exactly one value per phase, including absent phases.
+   std::vector<amrex::Real> gammaV(NPHASE,1.4), pinfV(NPHASE,0.), gGammaV(NPHASE,0.),
+       prefV(NPHASE,0.), erefV(NPHASE,0.), cvV(NPHASE,1.),
+       muV(NPHASE,0.), muBV(NPHASE,0.), kappaV(NPHASE,0.);
+   auto phase_array = [&](char const* name, std::vector<amrex::Real>& values) {
+       if(pp.contains(name) && pp.countval(name)!=NPHASE)
+           amrex::Abort(std::string("prob.EOS.")+name+" requires exactly NPHASE values");
+       pp.queryarr(name,values);
+       if(values.size()!=NPHASE)
+           amrex::Abort(std::string("prob.EOS.")+name+" requires exactly NPHASE values");
+       for(auto value:values)if(!std::isfinite(value))
+           amrex::Abort(std::string("prob.EOS.")+name+" contains a nonfinite value");
+   };
 
    pp.query("EOS",EOS);
-   pp.queryarr("gamma",gammaV);
-   pp.queryarr("pinf",pinfV);
+   phase_array("gamma",gammaV);
+   phase_array("pinf",pinfV);
 
-   pp.queryarr("gGamma",gGammaV);
-   pp.queryarr("pref",prefV);
-   pp.queryarr("eref",erefV);
+   phase_array("gGamma",gGammaV);
+   phase_array("pref",prefV);
+   phase_array("eref",erefV);
 
-   pp.queryarr("cv",cvV);
+   phase_array("cv",cvV);
 
-   pp.queryarr("mu",muV);
-   pp.queryarr("muB",muBV);
-   pp.queryarr("kappa",kappaV);
+   phase_array("mu",muV);
+   phase_array("muB",muBV);
+   phase_array("kappa",kappaV);
 
    {
       amrex::ParmParse ppp("prob");
@@ -105,22 +165,26 @@ void Parm::DynamicInit ()
       ppp.query("P0", P0);
    }
 
+   if(!(P0>0.) || !(rho0>0.) || !std::isfinite(P0) || !std::isfinite(rho0))
+       amrex::Abort("prob.P0 and prob.rho0 must be finite and positive");
    u0 = std::sqrt(P0/rho0);
 
-   // The stiffened-gas constants are given in Pa and nondimensionalized by P0
+   // SI EOS data: pressures / P0, specific energies and heat capacity * rho0/P0.
    for (int ID_Phase = 0; ID_Phase < NPHASE; ID_Phase++){
       gamma[ID_Phase] = gammaV[ID_Phase]; 
       pinf[ID_Phase] = pinfV[ID_Phase]/P0; 
       gGamma[ID_Phase] = gGammaV[ID_Phase]; 
-      pref[ID_Phase] = prefV[ID_Phase]; 
-      eref[ID_Phase] = erefV[ID_Phase]; 
-      cv[ID_Phase] = cvV[ID_Phase]; 
+      pref[ID_Phase] = prefV[ID_Phase]/P0;
+      eref[ID_Phase] = erefV[ID_Phase]*rho0/P0;
+      cv[ID_Phase] = cvV[ID_Phase]*rho0/P0;
       mu[ID_Phase] = muV[ID_Phase]; 
       muB[ID_Phase] = muBV[ID_Phase];
       kappa[ID_Phase] = kappaV[ID_Phase];
    }
 
    Initialize();
+   if(!(PhaseField_Parm.Eta_Multiplier>=0.) || !std::isfinite(PhaseField_Parm.Eta_Multiplier))
+       amrex::Abort("Initial interface width must be finite and nonnegative");
 
 }
 

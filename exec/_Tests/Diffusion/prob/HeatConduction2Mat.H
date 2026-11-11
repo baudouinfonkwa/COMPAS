@@ -53,7 +53,13 @@ amrex::Real ContactDensity(int ID_Phase, amrex::Real T, Parm const& parm)
     const amrex::Real B  = (ID_Phase == 1) ? parm.B1   : parm.B2;
     const amrex::Real cv = (ID_Phase == 1) ? parm.cv_1 : parm.cv_2;
 #endif
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+    const amrex::Real b=parm.C[ID_Phase];
+    const amrex::Real rhoT=A*(parm.P0+B/(1.+A))/cv;
+    return rhoT/(T+b*rhoT);
+#else
     return (A*parm.P0 + A*B/(1.0 + A))/(cv*T);
+#endif
 }
 
 // The temperature of the exact solution
@@ -115,7 +121,10 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
                     Alpha1*parm.P0, Alpha2*parm.P0,
                     Alpha1);
 #else
-    amrex::Array<amrex::Real, NPHASE> Alpha = {Alpha1, Alpha2};
+    amrex::Array<amrex::Real, NPHASE> Alpha = parm.single_material
+        ? amrex::Array<amrex::Real,NPHASE>{1.,0.}
+        : amrex::Array<amrex::Real,NPHASE>{H,1.-H};
+    parm.ApplyInitialAlphaFloor(Alpha);
     amrex::Array<amrex::Real, NPHASE> Alpha_rho, Alpha_P;
     for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
         Alpha_rho[i_Phase] = Alpha[i_Phase]*ContactDensity(i_Phase, T, parm);

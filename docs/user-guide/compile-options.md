@@ -24,6 +24,11 @@ model; the six-equation models give each phase its own stress and heat flux
 `NPHASE` is used by `FIVEEQS_NPHASE` and `SIXEQS_IE_NPHASE`. The two-phase models ignore
 it.
 
+In IE, `Physics.Relaxation=PressureTemperature` requires `DIFFUSION=true`;
+transport coefficients can all be zero for an inviscid equilibrium run.
+`Physics.CompatibleDiffusion=1` also requires `NONCONSERVATIVE=true`.
+The existing case makefiles accept `make DIFFUSION=true` without source edits.
+
 The number of state variables in $d$ dimensions is
 
 | `PHYSICS` | State variables | Count |

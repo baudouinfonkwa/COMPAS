@@ -95,8 +95,13 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
     for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
         Alpha[i_Phase] = 0.0;
     }
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+    Alpha[0]=H;Alpha[1]=1.-H;
+    parm.ApplyInitialAlphaFloor(Alpha);
+#else
     Alpha[0] = parm.eps + (1.0 - 2.0*parm.eps)*H;
     Alpha[1] = 1.0 - Alpha[0];
+#endif
     for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
         Alpha_rho[i_Phase] = Alpha[i_Phase]*parm.rho_phase[i_Phase];
         Alpha_P  [i_Phase] = Alpha[i_Phase]*P;

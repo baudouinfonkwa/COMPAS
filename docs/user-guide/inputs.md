@@ -84,6 +84,12 @@ for this reason: WENO5 with `lincc_interp` needs a margin of 3, and a blocking f
 The time step is shortened to reach `stop_time` exactly, and to land on the output times set by
 `amr.t_write_interval` and the output windows ([Output](#output)).
 
+For IE `WENO3B`, `WENO5` and `WENO5B`, the reconstruction quadrature also caps
+`dt` at `0.9*w/(cmax*sum_d(1/dx_d))`, with `w=1/6` for WENO3B and `w=1/12` for
+fifth-order reconstruction. `run.cfl` is an upper bound; these methods can take
+smaller steps. The IE five-material advection benchmark uses synchronized stages
+(`run.do_subcycle=0`) to retain admissibility across coarse–fine interfaces.
+
 **AMR time stepping.** With `run.do_subcycle = 1`, a level takes $r$ steps of $\Delta t/r$ for
 each step of the level below ($r$ the refinement ratio), with its coarse–fine ghost cells
 interpolated in time between the old and new states of the coarser level, and the reflux then
@@ -257,9 +263,49 @@ In `SIXEQS` and `SIXEQS_IE_NPHASE` the bounds on $\alpha_k$ and $\alpha_k\rho_k$
 | `Physics.source_term_step_switch`, `Physics.source_term_time_switch` | set `Physics.source_term` to `1` once the coarse step is at least `step_switch` and the time at least `time_switch` (defaults: never, `0.0`). Five-equation models |
 | `Physics.pressure_relaxation` | **`0`**, `1` (six-equation models) |
 | `Physics.pressure_temperature_relaxation` | **`0`**, `1` (`SIXEQS` only) |
-| `Physics.pressure_relaxation_trace` | **`0`**, or a volume fraction in $[0, 1)$: a phase with $0 < \alpha_k \le$ this value keeps its volume fraction in the pressure relaxation and reaches the common pressure through its energy ([safeguarded relaxation](models.md#safeguarded-pressure-relaxation); six-equation models). The closed form of the `SIXEQS` pressure-temperature relaxation does not use it, only its fallback to the pressure relaxation |
+| `Physics.pressure_relaxation_trace` | **`0`**. Nonzero trace freezing is supported by `SIXEQS` only; IE rejects it |
+| `Physics.HLLCImplementation` | **`ConservativePart`** (`0`) or `Consistent` (`1`), IE only |
+| `Physics.Relaxation` | **`Pressure`** (`0`) or `PressureTemperature` (`1`), IE only. Requires `pressure_relaxation=1`; P-T additionally requires `DIFFUSION=true` |
+| `Physics.CompatibleDiffusion` | **`0`**, `1`, IE only. Requires `DIFFUSION=true`, `NONCONSERVATIVE=true`, `pressure_relaxation=1`. If `Relaxation` is omitted, `1` selects P-T |
+| `Physics.ChemicalRelaxation` | **`0`**, `1`, IE only; requires P-T relaxation and the EOS data below |
+| `Physics.ChemicalRelaxation.Pairs` | zero-based phase-index pairs, e.g. `0 1`. Connected pairs form a mass-exchange group of one substance |
+| `Physics.ChemicalRelaxation.Tolerance` | **`1e-10`**, finite, in `(0,1e-3]`, normalized chemical-potential tolerance |
+| `Physics.ChemicalRelaxation.MaxSweeps` | **`128`**, positive integer |
+
 
 What these terms do is on [Models and equations](models.md).
+
+For IE chemical relaxation, supply `prob.EOS.Substance` (one name per phase),
+`prob.EOS.sref` (one reference entropy per phase), and positive `prob.EOS.T_ref` and
+`prob.EOS.p_ref`. Every pair must connect phases of the same substance. These data
+must belong to a mutually calibrated caloric EOS; arbitrary entropy constants do
+not define a physical phase-change model. Reference entropy is defined at
+`(p_ref,T_ref)`, in the input case's units for specific energy per temperature;
+it is not an unnormalized logarithmic integration constant. Reaction kinetics,
+inter-species chemistry and ideal-mixture mixing entropy are not included.
+
+The updated IE cases accept `prob.alpha_floor`, exactly `NPHASE` finite,
+nonnegative entries with sum less than one. Initialization uses
+`alpha_k = floor_k + (1-sum(floor))*alpha_raw_k`. This is an initialization rule;
+it does not clip transport results. Optional per-phase EOS lists, when supplied,
+need exactly `NPHASE` entries. IE requires finite positive heat capacities and
+finite nonnegative transport coefficients; omitted optional coefficients keep
+the case's documented defaults.
+
+For IE diffusion, `run.vnn` is in `(0,1]` and bounds the explicit time step by
+`vnn / (2*Dmax*sum_d(1/dx_d^2))`. On a square 2D grid, an old value `0.2`
+corresponds to `0.8` with this definition. On other grids, recompute this value;
+this bound alone does not guarantee positivity of the combined update.
+
+
+The refactored diffusion-advection case also accepts `prob.rho` (one density per
+phase, useful when a previously absent phase receives a positive floor) and
+optional positive `prob.T0` for an EOS-consistent common-temperature initial
+state. The shock-bubble case accepts `prob.rho_air`, `prob.bubble_diameter`, and
+optional `prob.initial_temperature`; a positive initial temperature derives
+upstream phase densities from the selected EOS instead of prescribed densities.
+Its optional three-phase build uses `prob.bubble_vapor_fraction` to divide the
+cavity between vapor and air. Existing two-phase inputs retain their setup.
 
 ## Phase-Field
 

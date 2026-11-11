@@ -7,6 +7,9 @@
 #ifndef PARM_H_
 #define PARM_H_
 
+#include <cmath>
+#include <string>
+#include <vector>
 #include <AMReX_REAL.H>
 #include <AMReX_Gpu.H>
 #include <AMReX_GpuMemory.H>
@@ -89,6 +92,37 @@ struct Parm
     amrex::Array<amrex::Real, NPHASE> gamma, pinf, gGamma, pref, eref, cv, mu, muB, kappa;
 #endif
 
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+    // Initial fractions: f_k + (1-sum f) alpha_raw,k. Not a transport clamp.
+    amrex::Array<amrex::Real,NPHASE> alpha_floor = [] {
+        amrex::Array<amrex::Real,NPHASE> values{};values.fill(1.e-6);return values;
+    }();
+    amrex::Real alpha_available=1.;
+
+    void ReadInitialAlphaFloor()
+    {
+        amrex::ParmParse pp("prob");
+        if(pp.contains("alpha_floor") && pp.countval("alpha_floor")!=NPHASE)
+            amrex::Abort("prob.alpha_floor requires exactly NPHASE values");
+        std::vector<amrex::Real> values(alpha_floor.begin(),alpha_floor.end());
+        pp.queryarr("alpha_floor",values);
+        amrex::Real sum=0.;
+        for(int l=0;l<NPHASE;++l){
+            if(!(values[l]>=0.) || !std::isfinite(values[l]))
+                amrex::Abort("prob.alpha_floor requires finite nonnegative values for every phase");
+            alpha_floor[l]=values[l];sum+=values[l];
+        }
+        if(!(sum<1.))amrex::Abort("prob.alpha_floor values must sum to less than one");
+        alpha_available=1.-sum;
+    }
+
+    AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+    void ApplyInitialAlphaFloor(amrex::Array<amrex::Real,NPHASE>& alpha) const
+    {
+        for(int l=0;l<NPHASE;++l)alpha[l]=alpha_floor[l]+alpha_available*alpha[l];
+    }
+#endif
+
     //
     // Governing equation parameters
     //
@@ -127,6 +161,9 @@ struct Parm
 AMREX_FORCE_INLINE
 void Parm::DynamicInit ()
 {
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+   ReadInitialAlphaFloor();
+#endif
    amrex::ParmParse pp("prob.EOS");
 
 #if (PHYSICS == FIVEEQS || PHYSICS == SIXEQS)
@@ -153,6 +190,37 @@ void Parm::DynamicInit ()
    pp.query("kappa_1",kappa_1);
    pp.query("kappa_2",kappa_2);
 #else
+#if PHYSICS == SIXEQS_IE_NPHASE
+   // Optional coefficients have physical defaults; every supplied array must
+   // contain exactly one value per phase, including absent phases.
+   std::vector<amrex::Real> gammaV(NPHASE,1.4), pinfV(NPHASE,0.), gGammaV(NPHASE,0.),
+       prefV(NPHASE,0.), erefV(NPHASE,0.), cvV(NPHASE,1.),
+       muV(NPHASE,0.), muBV(NPHASE,0.), kappaV(NPHASE,0.);
+   auto phase_array = [&](char const* name, std::vector<amrex::Real>& values) {
+       if(pp.contains(name) && pp.countval(name)!=NPHASE)
+           amrex::Abort(std::string("prob.EOS.")+name+" requires exactly NPHASE values");
+       pp.queryarr(name,values);
+       if(values.size()!=NPHASE)
+           amrex::Abort(std::string("prob.EOS.")+name+" requires exactly NPHASE values");
+       for(auto value:values)if(!std::isfinite(value))
+           amrex::Abort(std::string("prob.EOS.")+name+" contains a nonfinite value");
+   };
+
+   pp.query("EOS",EOS);
+   phase_array("gamma",gammaV);
+   phase_array("pinf",pinfV);
+
+   phase_array("gGamma",gGammaV);
+   phase_array("pref",prefV);
+   phase_array("eref",erefV);
+
+   phase_array("cv",cvV);
+
+   phase_array("mu",muV);
+   phase_array("muB",muBV);
+   phase_array("kappa",kappaV);
+
+#else
    std::vector<amrex::Real> gammaV(NPHASE), pinfV(NPHASE), gGammaV(NPHASE), prefV(NPHASE), erefV(NPHASE), cvV(NPHASE), muV(NPHASE), muBV(NPHASE), kappaV(NPHASE);
 
    pp.query("EOS",EOS);
@@ -169,6 +237,7 @@ void Parm::DynamicInit ()
    pp.queryarr("muB",muBV);
    pp.queryarr("kappa",kappaV);
 
+#endif
    for (int ID_Phase = 0; ID_Phase < NPHASE; ID_Phase++){
       gamma[ID_Phase] = gammaV[ID_Phase];
       pinf[ID_Phase] = pinfV[ID_Phase];
@@ -194,6 +263,14 @@ void Parm::DynamicInit ()
    pp_prob.query("mat_L",mat_L);
    pp_prob.query("mat_R",mat_R);
 
+#if PHYSICS == SIXEQS_IE_NPHASE
+   if(mat_L<1 || mat_L>2 || mat_R<1 || mat_R>2)
+       amrex::Abort("prob.mat_L and prob.mat_R must be 1 or 2");
+   if(!(rho_L>0.) || !(rho_R>0.) || !std::isfinite(rho_L) || !std::isfinite(rho_R))
+       amrex::Abort("Shock-tube densities must be finite and positive");
+   if(direction<0 || direction>=AMREX_SPACEDIM)
+       amrex::Abort("prob.direction must name a coordinate of this build");
+#endif
    Initialize();
 
 }

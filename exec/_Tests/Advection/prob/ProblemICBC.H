@@ -66,7 +66,8 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
     const amrex::Real eps = 1.0e-12;
     auto profile = [&](amrex::Real psi)
     {
-        return 0.5*(1.0 + std::tanh( psi/(std::sqrt(2.0)*eta) )*(1.0 - eps) );
+        const amrex::Real indicator=eta>0. ? std::tanh(psi/(std::sqrt(2.)*eta)) : (psi>=0.?1.:-1.);
+        return 0.5*(1.+indicator*(1.-eps));
     };
 
     // Signed distance, volume fraction and density of material 2 in each shape
@@ -294,10 +295,15 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
     amrex::ignore_unused(AMREX_D_DECL(dx, dy, dz));
 
     const amrex::Real eta = parm.PhaseField_Parm.Eta_Multiplier * dx_FinestLevel;
-    const amrex::Real eps = 1.0e-12;
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+    const amrex::Real eps=0.; // Per-phase padding is applied after partition normalization.
+#else
+    const amrex::Real eps=1.e-12;
+#endif
     auto profile = [&](amrex::Real psi)
     {
-        return 0.5*(1.0 + std::tanh( psi/(std::sqrt(2.0)*eta) )*(1.0 - eps) );
+        const amrex::Real indicator=eta>0. ? std::tanh(psi/(std::sqrt(2.)*eta)) : (psi>=0.?1.:-1.);
+        return 0.5*(1.+indicator*(1.-eps));
     };
 
     // Signed distance and density of each material
@@ -372,6 +378,10 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
     for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
         Alpha_phase[i_Phase] /= Sum_Alpha;
     }
+
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+    parm.ApplyInitialAlphaFloor(Alpha_phase);
+#endif
 
     // ---------------------------------------
     // Uniform pressure and velocity

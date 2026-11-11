@@ -70,7 +70,7 @@ amr.Interpolater      = "lincc_interp"
 # TIME STEPPING
 # =====================================================================
 run.cfl                     = 0.4
-run.vnn                     = 0.2          # Diffusive limit, dt = vnn dx^2 / (largest diffusivity)
+run.vnn                     = 0.8          # Fraction of FE diffusion limit: dt=vnn/(2 Dmax sum_d dx_d^-2)
 run.do_subcycle             = 1
 run.check_cfl               = 0
 run.timestep_change_limiter = 0
@@ -92,7 +92,7 @@ run.refine.T.grad      = 0.0005 0.0005 0.0005 0.0005
 amr.case_name        = ./plot/HeatConduction2Mat-6Eq-N
 amr.plot_int         = 1000000
 amr.t_write_interval = 0.25                # A plotfile every 0.25
-run.output_vars      = a1 a2 a1rho1 a2rho2 a1rho1e1 a2rho2e2 rho_u rho_v rho_E rho u v P a1p1 a2p2 T
+run.output_vars = a1 a2 a1rho1 a2rho2 a1rho1e1 a2rho2e2 rho_u rho_v rho_E rho u v P c a1p1 a2p2 T
 amr.chk_file         = ./checkpoints/chk
 amr.chk_int          = -1
 run.user_output_int  = 10                  # Heat and temperature errors every 10 coarse steps
@@ -102,12 +102,18 @@ run.user_output_int  = 10                  # Heat and temperature errors every 1
 # PHYSICS AND METHODS
 # =====================================================================
 Physics.pressure_relaxation = 1
+Physics.Relaxation = Pressure             # Pressure (0) or PressureTemperature (1)
+# Final common-pressure and phase-energy reset is always part of relaxation.
+Physics.HLLCImplementation      = ConservativePart  # Alternative: Consistent
 Physics.RiemannSolver                   = "HLLC"
 
 FiniteVolume.Scheme = "MUSCL-MC"
 FiniteVolume.THINC  = 0
 
 PhaseField.phase_field    = 0
+PhaseField.ID_FluxPhase2Flux = 1           # Required mixture mapping for internal-energy states
+PhaseField.ID_Flux           = 0           # 0: UD, 1: HLL
+PhaseField.ID_Formulation    = 1           # 0: base, 1: efficient
 PhaseField.Eta_Multiplier = 1.0            # Width of the initial profile of alpha, in cells (0: a step)
 
 
@@ -118,7 +124,7 @@ prob.P0     = 1.0
 prob.T_L    = 1.005
 prob.T_R    = 0.995
 prob.x0     = 0.0
-prob.eps    = 1.0e-8                       # Trace of the other phase
+prob.alpha_floor = 1.e-8 1.e-8  # Initial floors, in phase order
 prob.window = 0.1875                       # Half width of the window of the temperature errors
 
 
@@ -141,3 +147,14 @@ prob.EOS.kappa = 0.0063 0.00225
 # PROBLEM OF THE DIFFUSION CASE (prob/Parm.H)
 # =====================================================================
 prob.problem = HeatConduction2Mat
+
+# Diagnostic control: true removes the material interface (phase 1 everywhere).
+# Use matched material coefficients in both slots for its reference curve.
+prob.single_material = 0
+
+# 1: compatible viscous energy/work + perfect thermal contact + instantaneous P-T equilibrium.
+# 0: retain the existing separate-temperature diffusion/pressure-relaxation formulation.
+Physics.CompatibleDiffusion = 0
+
+# Optional equilibrium mass transfer; requires calibrated EOS entropy data and P-T relaxation.
+Physics.ChemicalRelaxation = 0

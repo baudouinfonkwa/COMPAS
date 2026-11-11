@@ -11,6 +11,8 @@
 #include <Parm.H>
 
 #include <string>
+#include <cmath>
+#include <vector>
 
 namespace {
 
@@ -37,6 +39,15 @@ void CheckGamma (amrex::Real gamma, std::string const& key, int EOS, int i_Phase
                      + " is " + std::to_string(cv) + ". Set " + key + " in the inputs file.");
     }
 }
+
+
+#if PHYSICS == SIXEQS_IE_NPHASE && DIFFUSION == true
+void CheckTransport(amrex::Real value,std::string const& key,int phase)
+{
+    if(!std::isfinite(value) || value<0.)
+        amrex::Abort("SIXEQS_IE_NPHASE diffusion requires finite nonnegative "+EOSValueName(key,phase));
+}
+#endif
 
 // The NASG covolume b (stored in C) must be >= 0; b = 0 is the stiffened gas.
 void CheckCovolume (amrex::Real b, std::string const& key, int i_Phase = -1)
@@ -374,10 +385,34 @@ void Parm::Initialize ()
     //Read Phase-Field parameters from the inputs file
     PhaseField_Parm.Initialize();
 
+    if (PhaseField_Parm.phase_field){
+        if (PhaseField_Parm.ID_FluxPhase2Flux != 1)
+            amrex::Abort("SixEq IE phase field requires PhaseField.ID_FluxPhase2Flux=1: the phasic mapping transports total rather than internal energies");
+        if ((PhaseField_Parm.ID_Flux != 0 && PhaseField_Parm.ID_Flux != 1) ||
+            (PhaseField_Parm.ID_Formulation != 0 && PhaseField_Parm.ID_Formulation != 1))
+            amrex::Abort("SixEq IE phase-field flux and formulation selectors must be 0 or 1");
+    }
+
     //Read linear solver parameters for Grad_QPF from the inputs file
     LinearSystem_Parm.Initialize();
 
     CheckPhaseLists();
+    if(Physics_Parm.PressureTemperatureRelaxation()){
+        amrex::ParmParse eos_inputs("prob.EOS");
+        if(!eos_inputs.contains("cv") || eos_inputs.countval("cv")!=NPHASE)
+            amrex::Abort("Physics.Relaxation=PressureTemperature requires explicit prob.EOS.cv for every phase");
+    }
+    static bool AnnouncedPT=false;
+    if(Physics_Parm.PressureTemperatureRelaxation() && !AnnouncedPT){
+        AnnouncedPT=true;
+        amrex::Print()<<"SIXEQS_IE_NPHASE: instantaneous joint pressure-temperature relaxation enabled.\n";
+    }
+    static bool AnnouncedCompatibleDiffusion=false;
+    if(Physics_Parm.compatible_diffusion && !AnnouncedCompatibleDiffusion){
+        AnnouncedCompatibleDiffusion=true;
+        amrex::Print()<<"SIXEQS_IE_NPHASE: compatible viscous diffusion and perfect thermal contact enabled.\n";
+    }
+
     if (EOS == 0 || EOS == 1 || EOS == 3){
         for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
             CheckGamma(gamma[i_Phase], "prob.EOS.gamma", EOS, i_Phase);
@@ -392,7 +427,7 @@ void Parm::Initialize ()
     // Each phase conducts only through itself, and the model has no temperature relaxation to
     // pass heat from one phase to another (once: the cases call Initialize again from DynamicInit)
     static bool Warned = false;
-    if (!Warned && Conducts){
+    if (!Warned && Conducts && !Physics_Parm.compatible_diffusion && !Physics_Parm.PressureTemperatureRelaxation()){
         Warned = true;
         amrex::Print() << "Warning: SIXEQS_IE_NPHASE with DIFFUSION = true and a nonzero conductivity: the model "
                        << "has no temperature relaxation, so no heat passes from one phase to another, and the heat "
@@ -448,6 +483,48 @@ void Parm::Initialize ()
         p_min[i_Phase] = -B[i_Phase]/(A[i_Phase] + 1.0);
     
     }
+
+#ifdef PARM_POST_EOS_INITIALIZE
+    // A testcase may convert raw EOS data to its solver units. This must run
+    // after every Initialize call, including the framework's second call.
+    PostEOSInitialize();
+#endif
+
+#ifdef PARM_EOS_SI_UNITS
+    Physics_Parm.InitializeChemicalEOS(P0,P0/rho0);
+#else
+    Physics_Parm.InitializeChemicalEOS();
+#endif
+    if(Physics_Parm.chemical_relaxation){
+        for(int l=0;l<NPHASE;++l){
+            const auto pi=B[l]/(A[l]+1.);
+            if(!(Physics_Parm.chemical_pref+pi>0.))
+                amrex::Abort("ChemicalRelaxation: EOS p_ref+p_infinity must be positive for every phase");
+        }
+        static bool announced=false;
+        if(!announced){announced=true;amrex::Print()<<"SIXEQS_IE_NPHASE: equilibrium chemical relaxation enabled (immiscible phases; nucleation permitted).\n";}
+    }
+
+    // Joint equilibrium uses caloric data even in inviscid builds. Validate
+    // coefficients after testcase nondimensionalization, including repeats.
+    if(Physics_Parm.PressureTemperatureRelaxation())for(int l=0;l<NPHASE;++l){
+        if(!std::isfinite(cv[l]) || !(cv[l]>0.) ||
+           !std::isfinite(A[l]) || !(A[l]>0.) || !std::isfinite(B[l]) ||
+           !std::isfinite(C[l]) || C[l]<0. || !std::isfinite(D[l]))
+            amrex::Abort("PressureTemperature relaxation requires finite A>0, cv>0, b>=0 and finite B,D for every phase");
+    }
+
+#if (DIFFUSION == true)
+    // Check the final coefficients, including testcase unit conversions.
+    for (int l=0; l<NPHASE; ++l){
+        CheckTransport(mu[l], "prob.EOS.mu", l);
+        CheckTransport(muB[l], "prob.EOS.muB", l);
+        CheckTransport(kappa[l], "prob.EOS.kappa", l);
+        if (!std::isfinite(cv[l]) || !(cv[l]>0.))
+            amrex::Abort("SIXEQS_IE_NPHASE diffusion requires finite positive " +
+                         EOSValueName("prob.EOS.cv", l));
+    }
+#endif
 
     amrex::Real inf = std::numeric_limits<amrex::Real>::infinity();
     UpperBound = {D_LOOP(NPHASE,1.0), D_LOOP(NPHASE,inf), D_LOOP(NPHASE,inf), AMREX_D_DECL( inf,  inf,  inf),   inf };

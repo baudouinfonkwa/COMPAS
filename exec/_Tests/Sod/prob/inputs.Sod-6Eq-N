@@ -86,7 +86,7 @@ run.refine.rho.grad      = 0.01 0.01 0.01 0.01 0.01 0.01 0.01 0.01 0.01 0.01
 amr.case_name        = ./plot/Sod-6Eq-N
 amr.plot_int         = 1000000
 amr.t_write_interval = 0.01                # A plotfile every 0.01
-run.output_vars      = a1rho1 rho u v w P a1 a2
+run.output_vars = a1 a2 a1rho1 a2rho2 a1rho1e1 a2rho2e2 rho_u rho_v rho_w rho_E rho u v w P c a1p1 a2p2
 amr.chk_file         = ./checkpoints/chk
 amr.chk_int          = 20000
 run.user_output_int  = 1                   # Shock position, mass and momentum every coarse step
@@ -96,6 +96,9 @@ run.user_output_int  = 1                   # Shock position, mass and momentum e
 # PHYSICS AND METHODS
 # =====================================================================
 Physics.pressure_relaxation = 1            # Instantaneous pressure relaxation
+Physics.Relaxation = Pressure             # Pressure (0) or PressureTemperature (1)
+# Final common-pressure and phase-energy reset is always part of relaxation.
+Physics.HLLCImplementation      = ConservativePart  # Alternative: Consistent
 Physics.RiemannSolver       = "HLLC"
 
 FiniteVolume.Scheme = "MUSCL"
@@ -106,6 +109,9 @@ FiniteVolume.THINC.UseNormal       = 1
 FiniteVolume.THINC.NormalThreshold = 0.4
 
 PhaseField.phase_field    = 0
+PhaseField.ID_FluxPhase2Flux = 1           # Required mixture mapping for internal-energy states
+PhaseField.ID_Flux           = 0           # 0: UD, 1: HLL
+PhaseField.ID_Formulation    = 1           # 0: base, 1: efficient
 PhaseField.cfl            = 0.3
 PhaseField.Mechanism      = "CAC-Adv"
 PhaseField.ID_ExplicitRC  = 0
@@ -120,3 +126,12 @@ prob.EOS.gamma = 1.4 1.6                   # Material 1 fills the tube, material
 prob.EOS.pinf  = 0.0 1.0
 
 prob.direction = 0                         # Direction of the tube: 0 = x, 1 = y, 2 = z
+
+# Per-phase INITIAL volume-fraction floors; no clipping during transport.
+prob.alpha_floor = 1.e-6 1.e-6
+
+# Heat capacities: J/(kg K) in the bubble cases; model units in _Tests.
+prob.EOS.cv = 1 1
+
+# Optional equilibrium mass transfer; requires calibrated EOS entropy data and P-T relaxation.
+Physics.ChemicalRelaxation = 0

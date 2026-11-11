@@ -91,7 +91,7 @@ run.refine.a1.value_range = 0.001 0.999  0.001 0.999  0.001 0.999  0.001 0.999
 amr.case_name        = ./plot/NASG-6Eq-N
 amr.plot_int         = 1000000
 amr.t_write_interval = 2.5e-5              # A plotfile every 2.5e-5 s
-run.output_vars      = a1rho1 a2rho2 rho u P a1 a2 T c
+run.output_vars = a1 a2 a1rho1 a2rho2 a1rho1e1 a2rho2e2 rho_u rho_v rho_E rho u v P c a1p1 a2p2 T
 amr.chk_file         = ./checkpoints/chk
 amr.chk_int          = 20000
 run.user_output_int  = 1                   # Conservation and covolume diagnostics every coarse step
@@ -101,6 +101,9 @@ run.user_output_int  = 1                   # Conservation and covolume diagnosti
 # PHYSICS AND METHODS
 # =====================================================================
 Physics.pressure_relaxation = 1            # Instantaneous pressure relaxation
+Physics.Relaxation = Pressure             # Pressure (0) or PressureTemperature (1)
+# Final common-pressure and phase-energy reset is always part of relaxation.
+Physics.HLLCImplementation      = ConservativePart  # Alternative: Consistent
 Physics.RiemannSolver       = "HLLC"
 
 FiniteVolume.Scheme = "MUSCL"
@@ -111,6 +114,9 @@ FiniteVolume.THINC.UseNormal       = 1
 FiniteVolume.THINC.NormalThreshold = 0.4
 
 PhaseField.phase_field    = 0
+PhaseField.ID_FluxPhase2Flux = 1           # Required mixture mapping for internal-energy states
+PhaseField.ID_Flux           = 0           # 0: UD, 1: HLL
+PhaseField.ID_Formulation    = 1           # 0: base, 1: efficient
 PhaseField.cfl            = 0.3
 PhaseField.Mechanism      = "ACDI"
 PhaseField.ID_ExplicitRC  = 1
@@ -141,3 +147,9 @@ prob.R_drop = 0.4                          # Drop (prob.problem = 1): water disk
 prob.P_drop = 1.0e5                        # T_drop, moving with (u_drop, u_drop) in a periodic box
 prob.T_drop = 300.0                        # set by the drop variants
 prob.u_drop = 50.0
+
+# Per-phase INITIAL volume-fraction floors; no clipping during transport.
+prob.alpha_floor = 1.e-6 1.e-6
+
+# Optional equilibrium mass transfer; requires calibrated EOS entropy data and P-T relaxation.
+Physics.ChemicalRelaxation = 0

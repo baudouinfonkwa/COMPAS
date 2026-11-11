@@ -75,5 +75,6 @@ $(error BUILD=$(BUILD) is not one of the builds of this case: $(BUILDS))
 endif
 
 DEFINES += -DADVECTION=true
-DEFINES += -DDIFFUSION=true
+DIFFUSION ?= true
+DEFINES += -DDIFFUSION=$(DIFFUSION)
 DEFINES += -DNONCONSERVATIVE=true

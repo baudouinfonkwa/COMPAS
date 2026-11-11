@@ -43,7 +43,7 @@ void Conservative2EnergyBound(amrex::Real& EnergyBound,
     for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
         p_mini = EOS_Parameter.p_min[i_Phase];
         EquationOfState_Phase(Alphai_rhoi_ei_min,
-                              p_mini,
+                              Alpha[i_Phase]*p_mini,
                               Alpha[i_Phase],
                               Alpha_rho[i_Phase],
                               EOS_Parameter,

@@ -3,349 +3,212 @@
 // This file is part of COMPAS, free software under the GNU General Public License,
 // version 3 or later, with an additional permission under section 7. It comes with
 // ABSOLUTELY NO WARRANTY. See COPYRIGHT and LICENSE for details.
-
 #ifndef RelaxationPressure_Instantaneous_Compressible6Eq_IE_NPhase_H_
 #define RelaxationPressure_Instantaneous_Compressible6Eq_IE_NPhase_H_
+#include <Macros.H>
+#include <cmath>
+#include <cstdio>
+#include <limits>
+#if PHYSICS == SIXEQS_IE_NPHASE
 
-#include<Macros.H>
-#if (PHYSICS==SIXEQS_IE_NPHASE)
+struct SixEqIERelaxationResult {
+    amrex::Real work_pressure=0.,reset_pressure=0.,volume_residual=0.;
+    int iterations=0;
+    amrex::Real initial_work_pressure=0.,initial_residual=0.;
+    int initial_halvings=0;
+};
 
-// Iteration cap of the Newton iteration below: it stops after RelaxNewton_MaxIter + 1 = 51
-// updates. The test cases need at most 7 iterations; the cap was 100000, which the iteration
-// reached where it stalled on its absolute test |f| <= 1e-16 or where the relaxation function has
-// no admissible root.
-constexpr int RelaxNewton_MaxIter = 50;
-
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-void EvalFx(amrex::Real& fx,
-			amrex::Real const& Pe,
-			amrex::Array<amrex::Real, NPHASE> const& Alpha,
-			amrex::Array<amrex::Real, NPHASE> const& Alpha_Ps,
-			Parm const& parm)
+// g(x)=g_inf+sum c_k/(x+shift_k), x=P_e+min(pi_k)>0.
+// All c_k are nonnegative. Evaluate g' without squaring tiny denominators.
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+void SixEqIE_RelaxationResidual(amrex::Real x,amrex::Real g_inf,
+    amrex::Array<amrex::Real,NPHASE> const& c,
+    amrex::Array<amrex::Real,NPHASE> const& shift,
+    amrex::Real& g,amrex::Real& derivative,amrex::Real& scale)
 {
-	fx = 0.0;
-	amrex::Real a,b;
-
-	for (int i_phase=0; i_phase< NPHASE; ++i_phase){
-		a = 1. + 1./parm.A[i_phase];
-		b = parm.B[i_phase]/(parm.A[i_phase]);
-
-		fx += (Alpha_Ps[i_phase] - Alpha[i_phase]*Pe)/(a*Pe +b + 1.e-300);
-	}
-
+    g=g_inf;derivative=0.;scale=std::abs(g_inf);
+    for(int k=0;k<NPHASE;++k)if(c[k]>0.){
+        const amrex::Real y=x+shift[k],term=c[k]/y;
+        g+=term;derivative-=term/y;scale+=term;
+    }
 }
 
-
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-void EvaldFdx(amrex::Real& dfdx,
-			amrex::Real const& Pe,
-			amrex::Array<amrex::Real, NPHASE> const& Alpha,
-			amrex::Array<amrex::Real, NPHASE> const& Alpha_Ps,
-			Parm const& parm)
+AMREX_GPU_DEVICE AMREX_FORCE_INLINE
+void PressureRelaxation_Cell(amrex::Array<amrex::Real,NSTATE>& out,
+    amrex::Array<amrex::Real,NSTATE> const& state,Parm const& parm,
+    int i=-1,int j=-1,int k=-1,SixEqIERelaxationResult* details=nullptr)
 {
-	dfdx = 0.0;
-	amrex::Real a, b;
-	for (int i_phase=0; i_phase< NPHASE; ++i_phase){
-		a = 1. + 1./parm.A[i_phase];
-		b = parm.B[i_phase]/parm.A[i_phase];
+    using amrex::Real;
+    if(parm.EOS<0 || parm.EOS>3)amrex::Abort("SixEq IE relaxation: unsupported EOS identifier");
+    constexpr Real eps=std::numeric_limits<Real>::epsilon();
+    constexpr Real tolerance=32.*eps;
+    out=state;
+    Real rho=0.,mass_scale=1.;
+    for(int n=0;n<NSTATE;++n)if(!std::isfinite(state[n]))
+        amrex::Abort("SixEq IE pressure relaxation: invalid incoming conservative state");
+    for(int l=0;l<NPHASE;++l){rho+=state[NPHASE+l];mass_scale=std::max(mass_scale,std::abs(state[NPHASE+l]));}
+    if(!(rho>0.) || !std::isfinite(rho))
+        amrex::Abort("SixEq IE pressure relaxation: invalid incoming conservative state");
+    amrex::Array<Real,NSTATE> primitive;
+    // Every incoming H -> alpha*p conversion goes through the canonical EOS.
+    Conservative2Primitive(primitive,state,parm);
+    amrex::Array<Real,NPHASE> c{},d{},pi{},shift{};
+    Real sum_alpha=0.,sum_d=0.,sum_c=0.,coefficient_scale=0.;
+    Real pi_min=std::numeric_limits<Real>::max();
+    for(int l=0;l<NPHASE;++l){
+        const Real alpha=state[l],mass=state[NPHASE+l],A=parm.A[l],B=parm.B[l],b=parm.C[l];
+        if(alpha < -64.*eps || mass < -64.*eps*mass_scale){
+            printf("SixEq IE incoming invalid cell=(%d,%d,%d) phase=%d alpha=%.17g mass=%.17g\n",i,j,k,l,alpha,mass);
+            amrex::Abort("SixEq IE relaxation: invalid incoming volume fraction or partial mass");
+        }
+        if(!(A>0.) || !(b>=0.) || !std::isfinite(A) || !std::isfinite(B)
+           || !std::isfinite(b) || !std::isfinite(parm.D[l]))
+            amrex::Abort("SixEq IE relaxation: invalid EOS coefficients");
+        sum_alpha+=alpha;pi[l]=B/(A+1.);
+        if(b>0. && alpha<=0. && mass>64.*eps*mass_scale)
+            amrex::Abort("SixEq IE relaxation: zero-volume NASG phase has finite mass");
+        // No positive trace cutoff. Nonpositive roundoff/absent volumes do not
+        // participate in volume exchange, as in the existing weighted-state policy.
+        if(alpha<=0.)continue;
+        const Real xi=NASG_Xi(alpha,mass,b),phi=xi*alpha;
+        const Real Pi=xi*primitive[2*NPHASE+l]; // Pi=phi*p, not an EOS conversion.
+        const Real gamma=(A+1.)/A;
+        c[l]=(Pi+phi*pi[l])/gamma;d[l]=phi/gamma;
+        coefficient_scale+=(std::abs(Pi)+std::abs(phi*pi[l]))/gamma;
+        if(!std::isfinite(c[l]) || !std::isfinite(d[l]))
+            amrex::Abort("SixEq IE relaxation: nonfinite pressure-work coefficients");
+        sum_d+=d[l];pi_min=std::min(pi_min,pi[l]);
+    }
+    // Transport/reflux can leave signed roundoff in nominally absent phases.
+    // Round only negative coefficients at mixture floating-point scale; this
+    // is not a volume-fraction cutoff and no positive coefficient is changed.
+    if(!std::isfinite(coefficient_scale))
+        amrex::Abort("SixEq IE relaxation: nonfinite pressure-work scale");
+    const Real coefficient_error=64.*eps*coefficient_scale;
+    for(int l=0;l<NPHASE;++l){
+        if(c[l]<-coefficient_error){
+            printf("SixEq IE relaxation invalid work state cell=(%d,%d,%d) phase=%d alpha=%.17g mass=%.17g alpha_p=%.17g c=%.17g tolerance=%.17g\n",
+                i,j,k,l,state[l],state[NPHASE+l],primitive[2*NPHASE+l],c[l],coefficient_error);
+            amrex::Abort("SixEq IE relaxation: incoming phase is below its EOS temperature bound");
+        }
+        if(c[l]<0.)c[l]=0.;
+        sum_c+=c[l];
+    }
+    const Real g_inf=(sum_alpha-1.)-sum_d;
+    if(!(g_inf<0.) || !(sum_c>0.) || !std::isfinite(sum_c) || !std::isfinite(g_inf))
+        amrex::Abort("SixEq IE relaxation: no admissible pressure-volume root");
+    Real g_zero=g_inf;bool pole=false;
+    for(int l=0;l<NPHASE;++l)if(state[l]>0.){
+        shift[l]=pi[l]-pi_min;
+        if(c[l]>0.){
+            if(shift[l]==0.)pole=true;
+            else g_zero+=c[l]/shift[l];
+        }
+    }
+    if(!pole && !(g_zero>0.))
+        amrex::Abort("SixEq IE relaxation: volume root is outside the common EOS pressure domain");
+    // Start at the previous mixture pressure, keeping the right-most branch
+    // x=P_e+pi_min>0. If p0 is outside that branch, choose a positive gap
+    // using the incoming pressure scale (no fixed dimensional pressure floor).
+    Real p0=0.;
+    for(int l=0;l<NPHASE;++l)p0+=primitive[2*NPHASE+l];
+    if(!std::isfinite(p0))amrex::Abort("SixEq IE relaxation: nonfinite initial mixture pressure");
+    Real x=p0+pi_min;
+    if(!(x>0.) || !std::isfinite(x)){
+        x=std::max(std::abs(p0),std::abs(pi_min));
+        if(!(x>0.))x=sum_c;
+    }
+    if(!(x>0.) || !std::isfinite(x))
+        amrex::Abort("SixEq IE relaxation: invalid initial pressure gap");
+    Real g,derivative,scale;
+    SixEqIE_RelaxationResidual(x,g_inf,c,shift,g,derivative,scale);
+    bool converged=std::isfinite(g) && std::abs(g)<=tolerance*scale;
+    int halvings=0;
+    // g decreases with pressure: halve the distance to the EOS bound until
+    // g>0, unless the initial/search point already meets the root tolerance.
+    // 2200 halvings cover the exponent range of finite double-precision gaps.
+    for(;!converged && g<0. && halvings<2200;++halvings){
+        const Real next=.5*x;
+        if(!(next>0.) || next==x)
+            amrex::Abort("SixEq IE relaxation: no representable positive-residual initial guess");
+        x=next;SixEqIE_RelaxationResidual(x,g_inf,c,shift,g,derivative,scale);
+        converged=std::isfinite(g) && std::abs(g)<=tolerance*scale;
+    }
+    if(!converged && (!(g>0.) || !std::isfinite(g) || !std::isfinite(scale)))
+        amrex::Abort("SixEq IE relaxation: could not find a positive-residual initial guess");
+    const Real initial_pressure=x-pi_min,initial_residual=g;
+    int iterations=0;
+    // Plain Newton-Raphson. For this decreasing convex residual, a positive
+    // start approaches the root from below in pressure; a sign crossing is
+    // not required. There is no bracket or midpoint/bisection fallback.
+    for(;!converged && iterations<160;++iterations){
+        if(!(derivative<0.) || !std::isfinite(derivative))
+            amrex::Abort("SixEq IE relaxation: invalid Newton derivative");
+        const Real candidate=x-g/derivative;
+        if(!(candidate>0.) || !std::isfinite(candidate) || candidate==x)
+            amrex::Abort("SixEq IE relaxation: Newton step left the pressure domain or stagnated");
+        x=candidate;SixEqIE_RelaxationResidual(x,g_inf,c,shift,g,derivative,scale);
+        if(!std::isfinite(g) || !std::isfinite(scale))
+            amrex::Abort("SixEq IE relaxation: nonfinite Newton residual");
+        converged=std::abs(g)<=tolerance*scale;
+    }
+    if(!converged)amrex::Abort("SixEq IE relaxation: pressure-volume root did not converge");
+    const Real Pe=x-pi_min;
+    Real alpha_sum=0.;
+    for(int l=0;l<NPHASE;++l){
+        if(state[l]>0.)out[l]=state[l]-d[l]+(c[l]>0.?c[l]/(x+shift[l]):0.);
+        alpha_sum+=out[l];
+        if(!std::isfinite(out[l]) || out[l]<-64.*eps)
+        amrex::Abort("SixEq IE relaxation: invalid relaxed volume fraction");
+    }
+    if(std::abs(alpha_sum-1.)>256.*eps)
+    amrex::Abort("SixEq IE relaxation: relaxed volumes do not sum to one");
 
-		dfdx += (-Alpha[i_phase]*b - Alpha_Ps[i_phase]*a)/(POW2(a*Pe+b + 1.e-300));
-	}
-
+    Real kinetic=0.;
+    for(int n=0;n<AMREX_SPACEDIM;++n)kinetic+=.5*state[3*NPHASE+n]*state[3*NPHASE+n]/rho;
+    const Real thermal=state[3*NPHASE+AMREX_SPACEDIM]-kinetic;
+    Real offset=0.,compliance=0.;
+    for(int l=0;l<NPHASE;++l){
+        Real intercept;
+        // p=0 evaluates the affine EOS intercept; it is not a stored phase state.
+        EquationOfState_Phase(intercept,0.,out[l],state[NPHASE+l],parm,l,true,true);
+        offset+=intercept;
+        compliance+=parm.A[l]*NASG_Xi(out[l],state[NPHASE+l],parm.C[l])*out[l];
+    }
+    if(!(compliance>0.) || !std::isfinite(compliance) || !std::isfinite(thermal) || !std::isfinite(offset))
+        amrex::Abort("SixEq IE relaxation: invalid energy-reset compliance or thermal budget");
+    const Real pressure=(thermal-offset)/compliance;
+    // ALWAYS reset common pressure and phasic energies from conserved mixture E,
+    // using the conservative energy budget.
+    for(int l=0;l<NPHASE;++l){
+        if(!std::isfinite(pressure) || (out[l]>0. && !(pressure+pi[l]>0.))){
+            printf("SixEq IE relaxation invalid reset cell=(%d,%d,%d) Pe=%.17g P_reset=%.17g thermal=%.17g\n",i,j,k,Pe,pressure,thermal);
+            amrex::Abort("SixEq IE pressure relaxation produced an inadmissible state");
+        }
+        const Real ap=out[l]*pressure;
+        EquationOfState_Phase(out[2*NPHASE+l],ap,out[l],state[NPHASE+l],parm,l,true,true);
+        if(!std::isfinite(out[2*NPHASE+l]))amrex::Abort("SixEq IE relaxation: nonfinite reset phase energy");
+    }
+    if(details){details->work_pressure=Pe;details->reset_pressure=pressure;details->volume_residual=alpha_sum-1.;details->iterations=iterations;
+        details->initial_work_pressure=initial_pressure;details->initial_residual=initial_residual;
+        details->initial_halvings=halvings;}
 }
 
-// Newton iteration on f(P) = sum_k (Alpha_Ps_k - Alpha_k P)/(gamma_k (P + pinf_k)) (Ndanou et al.
-// 2015), from |sum_k Alpha_Ps_k| halved until f >= 0, until |f| <= 1e-16, |f'| < 1e-14 or
-// RelaxNewton_MaxIter + 1 updates. Returns the number of updates; the caller checks the result.
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-int
-NewtonRaphson(amrex::Real & Pe,
-				amrex::Array<amrex::Real, NPHASE> const& Alpha,
-				amrex::Array<amrex::Real, NPHASE> const& Alpha_Ps,
-				Parm const& parm)
+AMREX_GPU_HOST AMREX_FORCE_INLINE
+void PressureRelaxationInstantaneous(amrex::MultiFab& mf,Parm const parm)
 {
-
-	amrex::Real P0 = 0.0;
-
-	for (int i_phase=0; i_phase< NPHASE; ++i_phase){
-		P0 += Alpha_Ps[i_phase];
-	}
-
-	// searching for initial guess (once P0 has underflowed to 0, halving changes nothing)
-
-	P0 = std::abs(P0);
-	amrex::Real f0;
-	EvalFx(f0, P0, Alpha, Alpha_Ps, parm);
-	int nit = 0;
-
-	while( f0 < 0 && P0 > 0){
-		P0 = 0.5*P0;
-		EvalFx(f0, P0, Alpha, Alpha_Ps, parm);
-		nit++;
-		if (nit > 10000){
-			break;
-		}
-	}
-	Pe = P0;
-
-
-	amrex::Real fx, dfdx, eps, epsprime;
-	eps = 1.e-16;
-	epsprime = 1.e-14;
-
-	EvalFx(fx, Pe, Alpha, Alpha_Ps, parm);
-
-	int niter = 0;
-	amrex::Real Pe2;
-	while(std::abs(fx) > eps ){
-		EvaldFdx(dfdx, Pe, Alpha, Alpha_Ps, parm);
-		EvalFx(fx, Pe, Alpha, Alpha_Ps, parm);
-
-		if(std::abs(dfdx) < epsprime){
-			break;
-		}
-		Pe2 = Pe - fx/dfdx;
-
-		Pe = Pe2;
-		niter++;
-
-		if(niter > RelaxNewton_MaxIter){
-			break;
-		}
-	}
-	return niter;
-
-}
-
-// NASG branch: EOS = 3 with a covolume b_k > 0 or a heat of formation q_k != 0 for some phase.
-// EOS = 3 with b = q = 0 takes the stiffened-gas branch, so it reproduces EOS = 1.
-AMREX_GPU_HOST_DEVICE
-AMREX_FORCE_INLINE
-bool PressureRelaxation_IsNASG (Parm const& parm)
-{
-	bool NASG = false;
-	if (parm.EOS == 3){
-		for (int i_phase = 0; i_phase < NPHASE; ++i_phase){
-			NASG = NASG || (parm.C[i_phase] > 0.0) || (parm.D[i_phase] != 0.0);
-		}
-	}
-	return NASG;
-}
-
-// Instantaneous pressure relaxation of one cell. The volume fractions come from the Newton
-// iteration above wherever it does not fail: |f| <= 1e-12 at a finite pressure above every
-// -pinf_k of the present phases (alpha_k > 0; the root of the admissible branch), and the sum of
-// the volume fractions equal to the sum before to 1e-12 (f carries a 1e-300 guard that the volume
-// fractions do not, so |f| alone misses a root at a vanishing P + pinf_k, as for a gas phase at
-// zero pressure; the volume fractions also lose digits next to an asymptote). A volume fraction
-// out of [0, 1] is not a failure: no volume fraction is clipped, and the bounds come from the
-// transport. Where the iteration fails (no convergence, as where a phase energy below its EOS
-// minimum leaves no root above the asymptotes, a root beyond an asymptote, a sum not kept, or a
-// phase with 0 < alpha_k <= Physics.pressure_relaxation_trace) the volume fractions come from the
-// safeguarded relaxation of RelaxationPressure_Safeguarded.H. In both cases
-// the phase internal energies are then reset at the pressure given by rho E. Only the volume
-// fractions and the phase internal energies change. Iter and Path report the iterations and the
-// path (Relax_Path*).
-AMREX_GPU_DEVICE
-AMREX_FORCE_INLINE
-void PressureRelaxation_Cell (amrex::Array<amrex::Real, NSTATE>& ConservativeR,
-                              amrex::Array<amrex::Real, NSTATE> const& Conservative,
-                              Parm const& parm,
-                              bool NASG,
-                              int& Iter,
-                              int& Path)
-{
-	amrex::Array<amrex::Real, NSTATE> Primitive;
-	Conservative2Primitive(Primitive, Conservative, parm);
-
-	amrex::Array<amrex::Real, NPHASE> Alpha;
-	amrex::Array<amrex::Real, NPHASE> Alpha_rho;
-	amrex::Array<amrex::Real, NPHASE> Alpha_Ps;
-	amrex::Array<amrex::Real, NPHASE> Alpha_rho_e;
-	AMREX_D_TERM( amrex::Real u;,
-	              amrex::Real v;,
-	              amrex::Real w);
-
-	AMREX_D_TERM( amrex::Real rho_u;,
-	              amrex::Real rho_v;,
-	              amrex::Real rho_w);
-
-	amrex::Real rho, rhoE, rhoe_h;
-	amrex::Real P;
-
-	Primitive2State(Alpha, Alpha_rho, Alpha_Ps, AMREX_D_DECL(u,v,w), P, Primitive);
-	Conservative2State(Alpha, Alpha_rho, Alpha_rho_e, AMREX_D_DECL(rho_u, rho_v, rho_w), rhoE, Conservative);
-	amrex::ignore_unused(P, AMREX_D_DECL(rho_u, rho_v, rho_w));
-
-	rho = 0.;
-	for(int i_phase=0; i_phase<NPHASE; ++i_phase){
-		rho += Alpha_rho[i_phase];
-	}
-
-	amrex::Real Pe, gamma, pinf;
-	amrex::Array<amrex::Real, NPHASE> AlphaR, Alpha_rho_eR;
-
-	// Partial form of the EOS: phi_k and Pi_k = phi_k p_k. With the NASG EOS (Le Metayer and
-	// Saurel 2016), phi_k = alpha_k - b_k alpha_k rho_k and
-	// Pi_k = (alpha_k rho_k e_k - alpha_k rho_k q_k - phi_k B_k)/A_k; the phase energies relaxed
-	// with the final pressure P give alpha_kR = alpha_k + (Pi_k - phi_k P)/(gamma_k (P + pinf_k)),
-	// the stiffened-gas function with alpha_k -> phi_k and alpha_k p_k -> Pi_k. phi_k is taken
-	// without the covolume floor, so that a phase compressed past 1/b_k in a mixture cell by the
-	// hyperbolic step (phi_k < 0) is relaxed back. Otherwise phi_k = alpha_k and Pi_k = alpha_k p_k.
-	amrex::Array<amrex::Real, NPHASE> Phi, Pi;
-	for(int i_phase = 0 ; i_phase<NPHASE; ++i_phase){
-		if (NASG){
-			Phi[i_phase] = Alpha[i_phase] - parm.C[i_phase]*Alpha_rho[i_phase];
-			Pi[i_phase]  = (Alpha_rho_e[i_phase] - Alpha_rho[i_phase]*parm.D[i_phase] - Phi[i_phase]*parm.B[i_phase])/parm.A[i_phase];
-		}
-		else {
-			Phi[i_phase] = Alpha[i_phase];
-			Pi[i_phase]  = Alpha_Ps[i_phase];
-		}
-	}
-
-	int niter = NewtonRaphson(Pe, Phi, Pi, parm);
-
-	for(int i_phase = 0 ; i_phase<NPHASE; ++i_phase){
-		gamma = 1. + 1./parm.A[i_phase];
-		pinf = (gamma-1.)*parm.B[i_phase]/gamma;
-		if (NASG){
-			AlphaR[i_phase] = Alpha[i_phase] + (Pi[i_phase] - Phi[i_phase]*Pe)/(gamma*(pinf+Pe));
-		}
-		else {
-			AlphaR[i_phase] = (Alpha_Ps[i_phase] + Alpha[i_phase]*gamma*pinf + Alpha[i_phase]*Pe*(gamma-1.))/(gamma*(pinf+Pe));
-		}
-	}
-
-	// Admissibility of the Newton result
-	amrex::Real fR;
-	EvalFx(fR, Pe, Phi, Pi, parm);
-	bool admissible = Relax_Finite(Pe) && (std::abs(fR) <= 1.e-12);
-	amrex::Real Sum = 0.0, SumR = 0.0;
-	for(int i_phase = 0 ; i_phase<NPHASE; ++i_phase){
-		Sum  += Alpha[i_phase];
-		SumR += AlphaR[i_phase];
-	}
-	admissible = admissible && (std::abs(SumR - Sum) <= 1.e-12);
-	for(int i_phase = 0 ; i_phase<NPHASE; ++i_phase){
-		admissible = admissible && Relax_Finite(AlphaR[i_phase]);
-		if (Alpha[i_phase] > 0.0){
-			const amrex::Real pinf_k = parm.B[i_phase]/(parm.A[i_phase] + 1.0);
-			admissible = admissible && (Pe + pinf_k > 0.0)
-			          && (Alpha[i_phase] > parm.Physics_Parm.pressure_relaxation_trace);
-		}
-	}
-	if (admissible){
-		Iter = niter;
-		Path = Relax_PathModel;
-	}
-	else {
-		amrex::Real PR;
-		Path = RelaxPressure_Safeguarded<NPHASE>(AlphaR, PR, Iter, Alpha, Alpha_rho, Phi, Pi, parm.A, parm.B,
-		                                         parm.Physics_Parm.pressure_relaxation_trace);
-	}
-
-	rhoe_h = rhoE - (0.5)*rho*( AMREX_D_TERM( u*u, +v*v, +w*w ) );
-
-	if (NASG){
-		// The pressure from the mixture internal energy, with the q_k terms
-		amrex::Real sum_BPhi = 0.0, sum_APhi = 0.0, sum_q = 0.0;
-		amrex::Array<amrex::Real, NPHASE> PhiR;
-		for(int i_phase = 0 ; i_phase<NPHASE; ++i_phase){
-			PhiR[i_phase] = NASG_Xi(AlphaR[i_phase], Alpha_rho[i_phase], parm.C[i_phase])*AlphaR[i_phase];
-			sum_BPhi += PhiR[i_phase]*parm.B[i_phase];
-			sum_APhi += PhiR[i_phase]*parm.A[i_phase];
-			sum_q    += Alpha_rho[i_phase]*parm.D[i_phase];
-		}
-		amrex::Real pr = (rhoe_h - sum_q - sum_BPhi)/sum_APhi;
-		for(int i_phase = 0 ; i_phase<NPHASE; ++i_phase){
-			Alpha_rho_eR[i_phase] = PhiR[i_phase]*(parm.A[i_phase]*pr + parm.B[i_phase]) + Alpha_rho[i_phase]*parm.D[i_phase];
-		}
-	}
-	else {
-		// The phase energies are reset at the common pressure pr from
-		//   alpha_k rho_k e_k = alpha_k (A_k pr + B_k) + alpha_k rho_k D_k,
-		// with alpha_k rho_k unchanged. The D terms (zero for EOS 0 and 1) are added only
-		// where D_k != 0, so those EOS keep the same arithmetic.
-		amrex::Real pr, a, b, d;
-		a = 0.; b = 0.; d = 0.;
-		for(int i_phase = 0 ; i_phase<NPHASE; ++i_phase){
-			a += AlphaR[i_phase]*parm.B[i_phase];
-			b += AlphaR[i_phase]*parm.A[i_phase];
-			if (parm.D[i_phase] != 0.0){
-				d += Alpha_rho[i_phase]*parm.D[i_phase];
-			}
-		}
-
-		pr = (rhoe_h - a - d)/b;
-		for(int i_phase = 0 ; i_phase<NPHASE; ++i_phase){
-			Alpha_rho_eR[i_phase] = AlphaR[i_phase]*(parm.A[i_phase]*pr + parm.B[i_phase]);
-			if (parm.D[i_phase] != 0.0){
-				Alpha_rho_eR[i_phase] += Alpha_rho[i_phase]*parm.D[i_phase];
-			}
-		}
-	}
-
-	ConservativeR = Conservative;
-	for(int i_phase = 0 ; i_phase<NPHASE; ++i_phase){
-		ConservativeR[INDEX_VolumeFraction1 + i_phase] = AlphaR[i_phase];
-		ConservativeR[INDEX_Energy1 + i_phase]         = Alpha_rho_eR[i_phase];
-	}
-}
-
-
-AMREX_GPU_HOST
-AMREX_FORCE_INLINE
-void
-PressureRelaxationInstantaneous (amrex::MultiFab & mf,
-							     const Parm parm)
-{
-	const bool NASG = PressureRelaxation_IsNASG(parm);
-
 #ifdef AMREX_USE_OMP
-#pragma omp parallel if (Gpu::notInLaunchRegion())
+#pragma omp parallel if(Gpu::notInLaunchRegion())
 #endif
-    {
-
-        for (MFIter mfi(mf,TilingIfNotGPU()); mfi.isValid(); ++mfi)
-        {
-
-
-            // Get the box
-            const Box& bx = mfi.tilebox();
-
-            // Pull the data into an array
-            Array4<Real const> statein   = mf.const_array(mfi);
-            Array4<Real      > stateout  = mf.array(mfi);
-
-
-            // ===========================
-            amrex::ParallelFor(bx,
-            [=] AMREX_GPU_DEVICE (int i, int j, int k)
-            {
-            	amrex::Array<amrex::Real, NSTATE> Conservative;
-            	amrex::Array<amrex::Real, NSTATE> ConservativeR;
-
-            	for (int v = 0; v < NSTATE; v++){
-            		Conservative[v] = statein(i,j,k,v);
-            	}
-
-				int Iter, Path;
-				PressureRelaxation_Cell(ConservativeR, Conservative, parm, NASG, Iter, Path);
-
-				for(int i_phase = 0 ; i_phase<NPHASE; ++i_phase){
-					stateout(i,j,k, INDEX_VolumeFraction1 + i_phase) = ConservativeR[INDEX_VolumeFraction1 + i_phase];
-					stateout(i,j,k, INDEX_Energy1 + i_phase)         = ConservativeR[INDEX_Energy1 + i_phase];
-				}
-
-			});
-		}
-	}
-
+    for(MFIter mfi(mf,TilingIfNotGPU());mfi.isValid();++mfi){
+        const auto box=mfi.tilebox();const auto state=mf.array(mfi);
+        amrex::ParallelFor(box,[=] AMREX_GPU_DEVICE(int i,int j,int k){
+            amrex::Array<amrex::Real,NSTATE> input,output;
+            for(int c=0;c<NSTATE;++c)input[c]=state(i,j,k,c);
+            PressureRelaxation_Cell(output,input,parm,i,j,k);
+            for(int l=0;l<NPHASE;++l){state(i,j,k,l)=output[l];state(i,j,k,2*NPHASE+l)=output[2*NPHASE+l];}
+        });
+    }
 }
-
 #endif
 #endif

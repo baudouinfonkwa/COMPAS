@@ -148,6 +148,9 @@ eos-nasg-b0-thinc       max_step=10 FiniteVolume.THINC=1 prob.EOS.EOS=3
 eos-nasg-b0-relax-pT    max_step=10 Physics.pressure_relaxation=0 Physics.pressure_temperature_relaxation=1 prob.EOS.EOS=3
 
 [Advection-6Eq-N]      BUILD=6Eq-N   inputs=prob/inputs.Advection-6Eq-N
+# Current IE solver options; the final pressure/energy reset stays on in both.
+hllc-consistent        max_step=10 Physics.HLLCImplementation=Consistent
+hllc-consistent-id     max_step=10 Physics.HLLCImplementation=1
 # The base inputs use the five-phase six-equation model with MUSCL-MC, HLLC, pressure relaxation,
 # stiffened gas and ACDI Phase-Field with the explicit treatment.
 

@@ -10,10 +10,11 @@
 # (Abgrall, JCP 125, 1996). The pressure, the velocity and the phase
 # temperatures stay uniform. Material 3, with its own viscosity and
 # conductivity, is absent (alpha_3 = alpha_3 rho_3 = alpha_3 rho_3 e_3 = 0)
-# and must stay exactly absent. This is the equilibrium and reduction
+# and should stay exactly absent. This is the equilibrium and reduction
 # test of DIFFUSION = true for the N-phase six-equation model (internal
 # energy form, NPHASE = 3, set in the GNUmakefile); variants.txt reruns
-# it without relaxation, with THINC and without Phase-Field.
+# it without relaxation, with THINC, with ACDI/CDI and with AMR.
+# The baseline retains its Phase-Field treatment; pf-off isolates physical diffusion.
 # Nondimensional units.
 # =====================================================================
 
@@ -76,7 +77,7 @@ amr.Interpolater      = "lincc_interp" # Coarse-fine BC interpolater
 # TIME STEPPING AND CFL CONTROL
 # =====================================================================
 run.cfl                     = 0.4         # CFL number
-run.vnn                     = 0.2         # Diffusive limit, dt = vnn dx^2 / (largest diffusivity)
+run.vnn                     = 0.8         # Fraction of FE diffusion limit: dt=vnn/(2 Dmax sum_d dx_d^-2)
 run.do_subcycle             = 1           # Subcycle child levels in time
 run.check_cfl               = 0           # Enable/disable CFL safety checks
 run.timestep_change_limiter = 0           # Limit timestep growth/shrink
@@ -111,7 +112,7 @@ amr.case_name        = ./plot/Advection-Viscous-6Eq-N   # Output directory and f
 amr.plot_int         = 1000000      # Frequency of plotfile generation
 amr.t_write_interval = 0.1          # A plotfile every 0.1 time units
 
-run.output_vars = a1 a2 a3 a1rho1 a2rho2 a3rho3 a1rho1e1 a2rho2e2 a3rho3e3 rho u v P   # Variables to include in plotfiles
+run.output_vars = a1 a2 a3 a1rho1 a2rho2 a3rho3 a1rho1e1 a2rho2e2 a3rho3e3 rho_u rho_v rho_E rho u v P c a1p1 a2p2 a3p3 T
 
 run.user_output_int = 1             # Area, bounds, equilibrium errors and integrals every coarse step
 
@@ -127,9 +128,15 @@ amr.chk_int  = 20000                # Steps between checkpoints
 # PHYSICS OPTIONS
 # =====================================================================
 Physics.pressure_relaxation = 1      # Instantaneous pressure relaxation
+Physics.Relaxation = Pressure             # Pressure (0) or PressureTemperature (1)
+# Final common-pressure and phase-energy reset is always part of relaxation.
+Physics.HLLCImplementation      = ConservativePart  # Alternative: Consistent
 Physics.RiemannSolver = "HLLC"       # Riemann solver type
 
 PhaseField.phase_field    = 1          # Phase-Field regularization of the interfaces
+PhaseField.ID_FluxPhase2Flux = 1           # Required mixture mapping for internal-energy states
+PhaseField.ID_Flux           = 0           # 0: UD, 1: HLL
+PhaseField.ID_Formulation    = 1           # 0: base, 1: efficient
 PhaseField.cfl            = 0.3        # Phase-field CFL number
 PhaseField.Mechanism      = "ACDI"     # Phase-Field model
 PhaseField.ID_ExplicitRC  = 1          # 0 implicit, 1 explicit Phase-Field treatment
@@ -176,3 +183,15 @@ prob.EOS.kappa = 0.001  0.005 0.05         # Thermal conductivities
 # PROBLEM OF THE DIFFUSION CASE (prob/Parm.H)
 # =====================================================================
 prob.problem = AdvectionViscousDrop
+
+# Per-phase INITIAL volume-fraction floors; no clipping during transport.
+prob.alpha_floor = 5.e-13 5.e-13 0
+# Optional densities for all phases if a positive third-phase floor is desired:
+# prob.rho = 0.1 1.0 1.0
+
+# 1: compatible viscous energy/work + perfect thermal contact + instantaneous P-T equilibrium.
+# 0: retain the existing separate-temperature diffusion/pressure-relaxation formulation.
+Physics.CompatibleDiffusion = 0
+
+# Optional equilibrium mass transfer; requires calibrated EOS entropy data and P-T relaxation.
+Physics.ChemicalRelaxation = 0

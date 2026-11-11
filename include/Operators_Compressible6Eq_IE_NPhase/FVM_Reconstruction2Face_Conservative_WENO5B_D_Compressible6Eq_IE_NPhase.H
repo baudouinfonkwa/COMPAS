@@ -13,7 +13,9 @@
 // Bounded WENO5 for the N-phase six-equation model, following the N-phase five-equation WENO5B.
 // The partial densities and volume fractions share nonlinear weights and are limited so that
 // they stay non-negative and the volume fractions sum to one. The velocities, the phasic
-// Alpha_k p_k and the mixture pressure are reconstructed with WENO5.
+// intrinsic p_k are reconstructed with WENO5, then alpha_k*p_k is formed
+// with the limited fraction. A shared convex limiter also bounds the EOS
+// thermal domain of both faces and the interior quadrature state.
 AMREX_GPU_DEVICE
 AMREX_FORCE_INLINE
 void FVM_Reconstruction2Face_Conservative_WENO5B_D(amrex::Array<amrex::Real,NSTATE>& Conservative_Face,
@@ -160,47 +162,29 @@ void FVM_Reconstruction2Face_Conservative_WENO5B_D(amrex::Array<amrex::Real,NSTA
         Theta = std::min({Theta, Theta_Alpha_rho, Theta_Alpha});
     }
 
-    amrex::Array<amrex::Real,NPHASE> Alpha_rho_Face;
-    amrex::Array<amrex::Real,NPHASE> Alpha_Face;
-    for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
-        f_LimiterBound(Alpha_rho_Face[i_Phase],
-                       (ID_Face == 1) ? Alpha_rhoL_fp[i_Phase] : Alpha_rhoR_fm[i_Phase],
-                       Alpha_rho_s[i_Phase][i_c],
-                       Theta);
-        f_LimiterBound(Alpha_Face[i_Phase],
-                       (ID_Face == 1) ? AlphaL_fp[i_Phase] : AlphaR_fm[i_Phase],
-                       Alpha_s[i_Phase][i_c],
-                       Theta);
+    amrex::Array<amrex::Real,NSTATE> primitive_faces[2],conservative_faces[2];
+    for(int side=0;side<2;++side){
+        const int face=side==0?1:-1;
+        amrex::Array<amrex::Real,NPHASE> alpha,mass,ap;
+        for(int l=0;l<NPHASE;++l){
+            f_LimiterBound(mass[l],side==0?Alpha_rhoL_fp[l]:Alpha_rhoR_fm[l],Alpha_rho_s[l][i_c],Theta);
+            f_LimiterBound(alpha[l],side==0?AlphaL_fp[l]:AlphaR_fm[l],Alpha_s[l][i_c],Theta);
+            amrex::Array<amrex::Real,Num_Point> f;
+            for(int j=0;j<Num_Point;++j)
+                f[j]=Alpha_s[l][j]>0.?Alpha_Ps_s[l][j]/Alpha_s[l][j]:std::max(p_s[j],-EOS_Parameter.B[l]/(EOS_Parameter.A[l]+1.));
+            Reconstruction2Face_WENO5_D(ap[l],f[0], f[1], f[2], f[3], f[4],face);
+        }
+        amrex::Array<amrex::Real,AMREX_SPACEDIM> velocity;
+        for(int d=0;d<AMREX_SPACEDIM;++d){
+            auto const& f=Vel_s[d];
+            Reconstruction2Face_WENO5_D(velocity[d],f[0], f[1], f[2], f[3], f[4],face);
+        }
+        State2Primitive(primitive_faces[side],alpha,mass,ap,
+            AMREX_D_DECL(velocity[0],velocity[1],velocity[2]),0.);
     }
-
-    //Velocity, phasic pressures and mixture pressure
-    amrex::Array<amrex::Real,AMREX_SPACEDIM> Vel_Face;
-    for (int i_Dim = 0; i_Dim < AMREX_SPACEDIM; i_Dim++){
-        amrex::Array<amrex::Real,Num_Point> const& f = Vel_s[i_Dim];
-        Reconstruction2Face_WENO5_D(Vel_Face[i_Dim],
-                                    f[0], f[1], f[2], f[3], f[4],
-                                    ID_Face);
-    }
-    amrex::Array<amrex::Real,NPHASE> Alpha_Ps_Face;
-    for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
-        amrex::Array<amrex::Real,Num_Point> const& f = Alpha_Ps_s[i_Phase];
-        Reconstruction2Face_WENO5_D(Alpha_Ps_Face[i_Phase],
-                                    f[0], f[1], f[2], f[3], f[4],
-                                    ID_Face);
-    }
-    amrex::Real p_Face;
-    Reconstruction2Face_WENO5_D(p_Face,
-                                p_s[0], p_s[1], p_s[2], p_s[3], p_s[4],
-                                ID_Face);
-
-    amrex::Array<amrex::Real,NSTATE> Primitive_Face;
-    State2Primitive(Primitive_Face,
-                    Alpha_Face, Alpha_rho_Face, Alpha_Ps_Face,
-       AMREX_D_DECL(Vel_Face[0], Vel_Face[1], Vel_Face[2]),
-                    p_Face);
-    Primitive2Conservative(Conservative_Face,
-                           Primitive_Face,
-                           EOS_Parameter);
+    SixEqIE_LimitReconstructedPair(conservative_faces[0],conservative_faces[1],
+        primitive_faces[0],primitive_faces[1],Conservative_c,EOS_Parameter,Weight);
+    Conservative_Face=conservative_faces[ID_Face==1?0:1];
 }
 
 #endif

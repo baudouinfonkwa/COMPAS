@@ -25,6 +25,7 @@ CEXE_headers += rho_c2_Mixture_Compressible6Eq_IE_NPhase.H
 CEXE_headers += SoundSpeed_Compressible6Eq_IE_NPhase.H
 CEXE_headers += Riemann_LLF_Compressible6Eq_IE_NPhase.H
 CEXE_headers += Riemann_HLL_Compressible6Eq_IE_NPhase.H
+CEXE_headers += HLLC_ThermalStar_Compressible6Eq_IE_NPhase.H
 CEXE_headers += Riemann_HLLC_Compressible6Eq_IE_NPhase.H
 CEXE_headers += RiemannSolver_Compressible6Eq_IE_NPhase.H
 
@@ -40,3 +41,8 @@ CEXE_headers += ComputeDerivedVar_Compressible6Eq_IE_NPhase.H
 CEXE_headers += EnergyCorrection_Compressible6Eq_IE_NPhase.H
 
 CEXE_headers += RelaxationPressure_Instantaneous_Compressible6Eq_IE_NPhase.H
+
+
+CEXE_headers += RelaxationPressureTemperature_Compressible6Eq_IE_NPhase.H
+
+CEXE_headers += RelaxationChemical_Compressible6Eq_IE_NPhase.H

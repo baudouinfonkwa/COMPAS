@@ -7,6 +7,9 @@
 #ifndef PARM_H_
 #define PARM_H_
 
+#include <cmath>
+#include <string>
+#include <vector>
 #include <AMReX_REAL.H>
 #include <AMReX_Gpu.H>
 #include <AMReX_GpuMemory.H>
@@ -123,6 +126,37 @@ struct Parm
     amrex::Array<amrex::Real, NPHASE> gamma, pinf, gGamma, pref, eref, cv, mu, muB, kappa;
 #endif
 
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+    // Initial fractions: f_k + (1-sum f) alpha_raw,k. Not a transport clamp.
+    amrex::Array<amrex::Real,NPHASE> alpha_floor = [] {
+        amrex::Array<amrex::Real,NPHASE> values{};values.fill(0.);return values;
+    }();
+    amrex::Real alpha_available=1.;
+
+    void ReadInitialAlphaFloor()
+    {
+        amrex::ParmParse pp("prob");
+        if(pp.contains("alpha_floor") && pp.countval("alpha_floor")!=NPHASE)
+            amrex::Abort("prob.alpha_floor requires exactly NPHASE values");
+        std::vector<amrex::Real> values(alpha_floor.begin(),alpha_floor.end());
+        pp.queryarr("alpha_floor",values);
+        amrex::Real sum=0.;
+        for(int l=0;l<NPHASE;++l){
+            if(!(values[l]>=0.) || !std::isfinite(values[l]))
+                amrex::Abort("prob.alpha_floor requires finite nonnegative values for every phase");
+            alpha_floor[l]=values[l];sum+=values[l];
+        }
+        if(!(sum<1.))amrex::Abort("prob.alpha_floor values must sum to less than one");
+        alpha_available=1.-sum;
+    }
+
+    AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+    void ApplyInitialAlphaFloor(amrex::Array<amrex::Real,NPHASE>& alpha) const
+    {
+        for(int l=0;l<NPHASE;++l)alpha[l]=alpha_floor[l]+alpha_available*alpha[l];
+    }
+#endif
+
     //
     // Governing equation parameters
     //
@@ -161,6 +195,9 @@ struct Parm
     // HeatConduction2Mat: two materials in contact at x0 at rest, at T_L and T_R; the errors
     // are measured in the window |x - x0| < window. Set from the inputs: the cross-section area
     // and the exact solution (densities, cp, diffusivities chi, effusivities e, interface T_i).
+#if PHYSICS == SIXEQS_IE_NPHASE
+    bool single_material = false;
+#endif
     amrex::Real T_L = 1.005, T_R = 0.995;
     amrex::Real x0 = 0.0;
     amrex::Real window = 0.1875;
@@ -212,6 +249,37 @@ void Parm::DynamicInit ()
    pp.query("kappa_1",kappa_1);
    pp.query("kappa_2",kappa_2);
 #else
+#if PHYSICS == SIXEQS_IE_NPHASE
+   // Optional coefficients have physical defaults; every supplied array must
+   // contain exactly one value per phase, including absent phases.
+   std::vector<amrex::Real> gammaV(NPHASE,1.4), pinfV(NPHASE,0.), gGammaV(NPHASE,0.),
+       prefV(NPHASE,0.), erefV(NPHASE,0.), cvV(NPHASE,1.),
+       muV(NPHASE,0.), muBV(NPHASE,0.), kappaV(NPHASE,0.);
+   auto phase_array = [&](char const* name, std::vector<amrex::Real>& values) {
+       if(pp.contains(name) && pp.countval(name)!=NPHASE)
+           amrex::Abort(std::string("prob.EOS.")+name+" requires exactly NPHASE values");
+       pp.queryarr(name,values);
+       if(values.size()!=NPHASE)
+           amrex::Abort(std::string("prob.EOS.")+name+" requires exactly NPHASE values");
+       for(auto value:values)if(!std::isfinite(value))
+           amrex::Abort(std::string("prob.EOS.")+name+" contains a nonfinite value");
+   };
+
+   pp.query("EOS",EOS);
+   phase_array("gamma",gammaV);
+   phase_array("pinf",pinfV);
+
+   phase_array("gGamma",gGammaV);
+   phase_array("pref",prefV);
+   phase_array("eref",erefV);
+
+   phase_array("cv",cvV);
+
+   phase_array("mu",muV);
+   phase_array("muB",muBV);
+   phase_array("kappa",kappaV);
+
+#else
    std::vector<amrex::Real> gammaV(NPHASE), pinfV(NPHASE), gGammaV(NPHASE), prefV(NPHASE), erefV(NPHASE), cvV(NPHASE), muV(NPHASE), muBV(NPHASE), kappaV(NPHASE);
 
    // The N-phase builds of this case differ in NPHASE (6Eq-N and 6Eq-N3): an inputs file run on
@@ -240,6 +308,7 @@ void Parm::DynamicInit ()
    queryphases("muB",muBV);
    queryphases("kappa",kappaV);
 
+#endif
    for (int ID_Phase = 0; ID_Phase < NPHASE; ID_Phase++){
       gamma[ID_Phase] = gammaV[ID_Phase];
       pinf[ID_Phase] = pinfV[ID_Phase];
@@ -344,6 +413,9 @@ void Parm::DynamicInit ()
    if (problem == HeatConduction2Mat_ID)
    {
       pp_prob.query("P0",P0);
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+      pp_prob.query("single_material",single_material);
+#endif
       pp_prob.query("T_L",T_L);
       pp_prob.query("T_R",T_R);
       pp_prob.query("x0",x0);
@@ -354,20 +426,26 @@ void Parm::DynamicInit ()
       std::vector<amrex::Real> lo, hi;
       pp_geom.getarr("prob_lo",lo);
       pp_geom.getarr("prob_hi",hi);
+#if PHYSICS == SIXEQS_IE_NPHASE
+      Area=1.;
+#endif
       for (int d = 1; d < AMREX_SPACEDIM; ++d){ Area *= hi[d] - lo[d]; }
 
       Initialize();
 
       // Exact solution, after Initialize has set the EOS parameters A and B
 #if (PHYSICS == SIXEQS_IE_NPHASE)
-      rho_L = (A[0]*P0 + A[0]*B[0]/(1.0 + A[0]))/(cv[0]*T_L);
-      rho_R = (A[1]*P0 + A[1]*B[1]/(1.0 + A[1]))/(cv[1]*T_R);
+      const int right=single_material?0:1;
+      const amrex::Real rhoT_L=A[0]*(P0+B[0]/(1.+A[0]))/cv[0];
+      const amrex::Real rhoT_R=A[right]*(P0+B[right]/(1.+A[right]))/cv[right];
+      rho_L = rhoT_L/(T_L+C[0]*rhoT_L);
+      rho_R = rhoT_R/(T_R+C[right]*rhoT_R);
       cp_L  = cv[0]*(1.0 + A[0])/A[0];
-      cp_R  = cv[1]*(1.0 + A[1])/A[1];
+      cp_R  = cv[right]*(1.0 + A[right])/A[right];
       chi_L = kappa[0]/(rho_L*cp_L);
-      chi_R = kappa[1]/(rho_R*cp_R);
+      chi_R = kappa[right]/(rho_R*cp_R);
       e_L   = std::sqrt(kappa[0]*rho_L*cp_L);
-      e_R   = std::sqrt(kappa[1]*rho_R*cp_R);
+      e_R   = std::sqrt(kappa[right]*rho_R*cp_R);
 #else
       rho_L = (A1*P0 + A1*B1/(1.0 + A1))/(cv_1*T_L);
       rho_R = (A2*P0 + A2*B2/(1.0 + A2))/(cv_2*T_R);
@@ -402,8 +480,34 @@ void Parm::DynamicInit ()
       pp_prob.query("P0",P0);
       pp_prob.query("u0",u0);
       pp_prob.query("v0",v0);
-
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+      // A previously absent phase needs a density if its requested floor is positive.
+      std::vector<amrex::Real> density(NPHASE,1.);
+      density[0]=rho_1;density[1]=rho_2;
+      if(pp_prob.contains("rho") && pp_prob.countval("rho")!=NPHASE)
+          amrex::Abort("prob.rho requires exactly NPHASE values");
+      pp_prob.queryarr("rho",density);
+      for(int l=0;l<NPHASE;++l){
+          if(!(density[l]>0.) || !std::isfinite(density[l]))
+              amrex::Abort("prob.rho requires finite positive phase densities");
+          rho_phase[l]=density[l];
+      }
+      rho_1=rho_phase[0];rho_2=rho_phase[1];
+#endif
       Initialize();
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+      // Optional common-temperature IC for comparing equilibrium advection
+      // under the one-temperature diffusion model. No effect unless supplied.
+      if(pp_prob.contains("T0")){
+          amrex::Real temperature;pp_prob.get("T0",temperature);
+          if(!(temperature>0.) || !std::isfinite(temperature))amrex::Abort("prob.T0 must be finite and positive");
+          for(int l=0;l<NPHASE;++l){
+              const amrex::Real rhoT=A[l]*(P0+B[l]/(1.+A[l]))/cv[l];
+              rho_phase[l]=rhoT/(temperature+C[l]*rhoT);
+          }
+          rho_1=rho_phase[0];rho_2=rho_phase[1];
+      }
+#endif
    }
 #endif
 
@@ -412,6 +516,12 @@ void Parm::DynamicInit ()
    {
       Initialize();
    }
+#endif
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+   if(problem==Couette2Layer_ID || problem==HeatConduction2Mat_ID)alpha_floor.fill(eps);
+   else if(problem==ViscousShockTube_ID)alpha_floor.fill(1.e-6);
+   else if(problem==AdvectionViscousDrop_ID){alpha_floor[0]=alpha_floor[1]=5.e-13;}
+   ReadInitialAlphaFloor();
 #endif
 }
 

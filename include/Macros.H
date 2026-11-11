@@ -149,7 +149,16 @@ using namespace amrex;
 #ifndef NONCONSERVATIVE
 #define NONCONSERVATIVE (true)
 #endif
+#if (DIFFUSION == true)
+// Runtime-compatible diffusion needs the same face traction/work/heat in the
+// source and in AMR flux registers. Extra slots are zero when the option is off.
+#define NC_TERMS (AMREX_SPACEDIM+3)
+#define IE_NC_TRACTION 1
+#define IE_NC_WORK (AMREX_SPACEDIM+1)
+#define IE_NC_HEAT (AMREX_SPACEDIM+2)
+#else
 #define NC_TERMS 1
+#endif
 
 #endif
 

@@ -85,8 +85,8 @@ void initial_condition(amrex::Array<amrex::Real, NSTATE>& Conservative,
                     Alpha1*p, (1.0 - Alpha1)*p,
                     Alpha1);
 #else
-    const amrex::Real eps = 1.0e-6; // Trace of the second phase
-    amrex::Array<amrex::Real, NPHASE> Alpha = {1.0 - eps, eps};
+    amrex::Array<amrex::Real, NPHASE> Alpha = {1.,0.};
+    parm.ApplyInitialAlphaFloor(Alpha);
     amrex::Array<amrex::Real, NPHASE> Alpha_rho, Alpha_P;
     for (int i_Phase = 0; i_Phase < NPHASE; i_Phase++){
         Alpha_rho[i_Phase] = Alpha[i_Phase]*rho;

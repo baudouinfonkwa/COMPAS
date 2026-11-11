@@ -1,289 +1,105 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH GPL-3.0-linking-exception
 // Copyright (C) 2026 The Regents of the University of Michigan
-// This file is part of COMPAS, free software under the GNU General Public License,
-// version 3 or later, with an additional permission under section 7. It comes with
-// ABSOLUTELY NO WARRANTY. See COPYRIGHT and LICENSE for details.
-
 #ifndef Riemann_HLLC_Compressible6Eq_IE_NPhase_H_
 #define Riemann_HLLC_Compressible6Eq_IE_NPhase_H_
+#include <Macros.H>
+#include <HLLC_ThermalStar_Compressible6Eq_IE_NPhase.H>
+#if PHYSICS == SIXEQS_IE_NPHASE
 
-#include<Macros.H>
-#if (PHYSICS==SIXEQS_IE_NPHASE)
-
-template <typename TF, typename TV, typename TU>
-AMREX_GPU_DEVICE
-AMREX_FORCE_INLINE
-void 
-Riemann_HLLC (TF & Flux_Riemann,
-              TV & Vel_Riemann,
-              amrex::Real & cmax,
-              TU const & ConservativeL,
-              TU const & ConservativeR,
-              Parm const& EOS_Parameter,
-              int ID_Dimension)
+template<typename TF,typename TV,typename TU>
+AMREX_GPU_DEVICE AMREX_FORCE_INLINE
+void Riemann_HLLC(TF& flux,TV& velocity,amrex::Real& cmax,
+    TU const& left,TU const& right,Parm const& parm,int dir)
 {
-
-    amrex::Array<amrex::Real, NSTATE> PrimitiveL;
-    Conservative2Primitive(PrimitiveL,
-                           ConservativeL,
-                           EOS_Parameter);
-    
-    amrex::Array<amrex::Real, NSTATE> PrimitiveR;
-    Conservative2Primitive(PrimitiveR,
-                           ConservativeR,
-                           EOS_Parameter);
-    
-    amrex::Array<amrex::Real, NSTATE> FluxL;
-    Conservative2Flux(FluxL,
-                      ConservativeL,
-                      EOS_Parameter,
-                      ID_Dimension);
-    
-    amrex::Array<amrex::Real, NSTATE> FluxR;
-    Conservative2Flux(FluxR,
-                      ConservativeR,
-                      EOS_Parameter,
-                      ID_Dimension);
-
-
-    // data on the left
-    amrex::Array<amrex::Real,NPHASE> AlphaL;
-    amrex::Array<amrex::Real,NPHASE> Alpha_rhoL;
-    amrex::Array<amrex::Real,NPHASE> Alpha_PsL;
-    AMREX_D_TERM( amrex::Real uL;,
-                  amrex::Real vL;,
-                  amrex::Real wL );
-    amrex::Real pL;
-
-    amrex::Array<amrex::Real,NPHASE> Alpha_rho_eL;
-
-    AMREX_D_TERM( amrex::Real rho_uL;, 
-                  amrex::Real rho_vL;, 
-                  amrex::Real rho_wL);
-                
-    amrex::Real rho_EL;
-
-    Primitive2State(AlphaL, Alpha_rhoL, Alpha_PsL, AMREX_D_DECL(uL, vL, wL), pL, PrimitiveL);
-    Conservative2State(AlphaL, Alpha_rhoL, Alpha_rho_eL, AMREX_D_DECL(rho_uL, rho_vL, rho_wL),rho_EL, ConservativeL);
-
-    
-    // data on the right
-    amrex::Array<amrex::Real,NPHASE> AlphaR;
-    amrex::Array<amrex::Real,NPHASE> Alpha_rhoR;
-    amrex::Array<amrex::Real,NPHASE> Alpha_PsR;
-    AMREX_D_TERM( amrex::Real uR;,
-                  amrex::Real vR;,
-                  amrex::Real wR );
-    amrex::Real pR;
-
-    amrex::Array<amrex::Real,NPHASE> Alpha_rho_eR;
-
-    AMREX_D_TERM( amrex::Real rho_uR;, 
-                  amrex::Real rho_vR;, 
-                  amrex::Real rho_wR);
-
-    amrex::Real rho_ER;
-
-    Primitive2State(AlphaR, Alpha_rhoR, Alpha_PsR, AMREX_D_DECL(uR, vR, wR), pR, PrimitiveR);
-    Conservative2State(AlphaR, Alpha_rhoR, Alpha_rho_eR, AMREX_D_DECL(rho_uR, rho_vR, rho_wR),rho_ER, ConservativeR);
-
-    amrex::Real cL;
-    SoundSpeed(cL,
-                AlphaL,
-                Alpha_rhoL,
-                Alpha_PsL,
-                EOS_Parameter);
-    
-    amrex::Real cR;
-    SoundSpeed(cR,
-        AlphaR,
-        Alpha_rhoR,
-        Alpha_PsR,
-        EOS_Parameter);
-
-
-    amrex::Real VL;
-    amrex::Real VR;
-	//x
-    if (ID_Dimension == 0){
-        VL = uL;
-        VR = uR;
+    using amrex::Real;
+    constexpr int momentum=3*NPHASE;
+    constexpr int energy=momentum+AMREX_SPACEDIM;
+    const auto implementation=parm.Physics_Parm.hllc_implementation;
+    const bool physical=implementation==HLLCImplementation::Consistent;
+    if(!physical && implementation!=HLLCImplementation::ConservativePart)
+        amrex::Abort("SixEq IE HLLC: unknown implementation");
+    amrex::Array<Real,NSTATE> VL,VR,FL,FR;
+    Conservative2Primitive(VL,left,parm);
+    Conservative2Primitive(VR,right,parm);
+    Conservative2Flux(FL,left,parm,dir);
+    Conservative2Flux(FR,right,parm,dir);
+    amrex::Array<Real,NPHASE> alphaL,massL,apL,alphaR,massR,apR;
+    Real rhoL=0.,rhoR=0.,pL=0.,pR=0.,absPL=0.,absPR=0.;
+    for(int k=0;k<NPHASE;++k){
+        alphaL[k]=VL[k];alphaR[k]=VR[k];
+        massL[k]=VL[NPHASE+k];massR[k]=VR[NPHASE+k];
+        apL[k]=VL[2*NPHASE+k];apR[k]=VR[2*NPHASE+k];
+        rhoL+=massL[k];rhoR+=massR[k];pL+=apL[k];pR+=apR[k];
+        absPL+=std::abs(apL[k]);absPR+=std::abs(apR[k]);
     }
-    #if (AMREX_SPACEDIM > 1)
-    //y
-    else if (ID_Dimension == 1){
-        VL = vL;
-        VR = vR;
+    Real cL,cR;SoundSpeed(cL,alphaL,massL,apL,parm);SoundSpeed(cR,alphaR,massR,apR,parm);
+    const Real uL=VL[momentum+dir],uR=VR[momentum+dir];
+    const Real average_u=.5*(uL+uR),average_c=.5*(cL+cR);
+    // Keep the pre-existing wave-speed estimates to isolate the star/flux choice.
+    // const Real SL=std::min(average_u-average_c,uL-cL);
+    // const Real SR=std::max(average_u+average_c,uR+cR);
+    const Real SL=std::min(uR-cR,uL-cL);
+    const Real SR=std::max(uL+cL,uR+cR);
+    Real normL=0.,normR=0.;
+    for(int d=0;d<AMREX_SPACEDIM;++d){normL+=VL[momentum+d]*VL[momentum+d];normR+=VR[momentum+d]*VR[momentum+d];}
+    cmax=std::max(cL+std::sqrt(normL),cR+std::sqrt(normR));
+    if(!std::isfinite(cmax) || !(rhoL>0.) || !(rhoR>0.) || !(SL<SR))
+        amrex::Abort("SixEq IE HLLC: invalid density or wave-speed bounds");
+    // Supersonic faces do not require a star-state construction.
+    if(SL>=0. || SR<=0.){
+        const bool choose_left=SL>=0.;
+        for(int c=0;c<NSTATE;++c)flux[c]=choose_left?FL[c]:FR[c];
+        for(int d=0;d<AMREX_SPACEDIM;++d)velocity[d]=choose_left?VL[momentum+d]:VR[momentum+d];
+        return;
     }
-    #endif
-    #if (AMREX_SPACEDIM > 2)      
-    //z
-    else if (ID_Dimension == 2){
-        VL = wL;
-        VR = wR;
+    const Real qL=rhoL*(uL-SL),qR=rhoR*(uR-SR);
+    if(qL==qR || !std::isfinite(qL) || !std::isfinite(qR))
+        amrex::Abort("SixEq IE HLLC: degenerate contact-speed denominator");
+    const Real contact=(qL*uL-qR*uR+pL-pR)/(qL-qR);
+    if(!(contact>SL && contact<SR) || !std::isfinite(contact))
+        amrex::Abort("SixEq IE HLLC: contact speed outside acoustic fan");
+    const Real pressure_star=pL+qL*(uL-contact);
+    amrex::Array<Real,NSTATE> starL=VL,starR=VR;
+    const Real rL=(uL-SL)/(contact-SL),rR=(uR-SR)/(contact-SR);
+    for(int k=0;k<NPHASE;++k){
+        starL[k]=physical?alphaL[k]:rL*alphaL[k];
+        starR[k]=physical?alphaR[k]:rR*alphaR[k];
+        starL[NPHASE+k]=rL*massL[k];starR[NPHASE+k]=rR*massR[k];
+        starL[2*NPHASE+k]=SixEqIE_HLLC_AlphaPressureStar(alphaL[k],massL[k],apL[k],starL[k],rL,k,parm,std::max(absPL,absPR));
+        starR[2*NPHASE+k]=SixEqIE_HLLC_AlphaPressureStar(alphaR[k],massR[k],apR[k],starR[k],rR,k,parm,std::max(absPL,absPR));
     }
-    #endif
-    
-    amrex::Real V_avg = 0.5*(VL + VR);
-    amrex::Real c_avg = 0.5*(cL + cR);
-    amrex::Real SL = std::min( V_avg-c_avg,VL-cL );
-    amrex::Real SR = std::max( V_avg+c_avg,VR+cR );
-    
-    amrex::Real Sm = std::min( 0.0, SL );
-    amrex::Real Sp = std::max( 0.0, SR );
-
-    amrex::Array<amrex::Real, NSTATE> QR, QL, ConservativeL_Star, ConservativeR_Star;
-    amrex::Array<amrex::Real, AMREX_SPACEDIM> VelL = {AMREX_D_DECL(uL, vL, wL)};
-    amrex::Array<amrex::Real, AMREX_SPACEDIM> VelR = {AMREX_D_DECL(uR, vR, wR)};
-    amrex::Array<amrex::Real, AMREX_SPACEDIM> VelL_Star, VelR_Star;
-    amrex::Real S_Star, P_Star;
-    
-
-    for(int i=0; i<NSTATE; ++i){
-        QR[i] = FluxR[i] - SR*ConservativeR[i];
-        QL[i] = FluxL[i] - SL*ConservativeL[i];
-        ConservativeL_Star[i] = ConservativeL[i];
-        ConservativeR_Star[i] = ConservativeR[i];
-
+    for(int d=0;d<AMREX_SPACEDIM;++d){
+        starL[momentum+d]=d==dir?contact:VL[momentum+d];
+        starR[momentum+d]=d==dir?contact:VR[momentum+d];
     }
-
-
-    amrex::Real QL_rho = 0.;
-    amrex::Real QR_rho = 0.;
-    
-    for(int i_Phase=0; i_Phase < NPHASE; ++i_Phase){
-        QL_rho += QL[NPHASE + i_Phase];
-        QR_rho += QR[NPHASE + i_Phase];
+    // Both implementations first produce primitive alpha*p*. All phasic H*
+    // values come from the existing EOS conversion, including NASG and D offsets.
+    amrex::Array<Real,NSTATE> UL,UR;
+    Primitive2Conservative(UL,starL,parm);
+    Primitive2Conservative(UR,starR,parm);
+    // Preserve the independent conservative total-energy jump. It need not
+    // equal sum(H*)+K* for this approximate Riemann fan.
+    UL[energy]=((uL-SL)*left[energy]+pL*uL-pressure_star*contact)/(contact-SL);
+    UR[energy]=((uR-SR)*right[energy]+pR*uR-pressure_star*contact)/(contact-SR);
+    const Real weightL=.5*(1.+Sign(contact)),weightR=1.-weightL;
+    for(int c=0;c<NSTATE;++c){
+        // Use the same convective flux for nonconservative variables in both
+        // modes. Conservative-part stars recover their conservative RH flux.
+        if(c<NPHASE || (c>=2*NPHASE && c<3*NPHASE))
+            flux[c]=contact*(weightL*UL[c]+weightR*UR[c]);
+        else
+            flux[c]=weightL*(FL[c]+SL*(UL[c]-left[c]))
+                   +weightR*(FR[c]+SR*(UR[c]-right[c]));
     }
-    
-
-    for(int i=0; i<AMREX_SPACEDIM; ++i){
-        VelL_Star[i] = VelL[i];
-        VelR_Star[i] = VelR[i];
+    for(int d=0;d<AMREX_SPACEDIM;++d){
+        if(d!=dir)velocity[d]=weightL*VL[momentum+d]+weightR*VR[momentum+d];
+        else if(physical)velocity[d]=contact;
+        else{
+            // Conservative-part alpha flux = alpha_donor*u_hat; use the
+            // same trace for +alpha div(u_hat) to preserve sum(alpha)=1.
+            velocity[d]=weightL*(uL+SL*(rL-1.))+weightR*(uR+SR*(rR-1.));
+        }
     }
-
-    S_Star = (QL[3*NPHASE+ ID_Dimension] - QR[3*NPHASE+ID_Dimension])/(QL_rho - QR_rho);
-    P_Star = -(QL[3*NPHASE+ ID_Dimension]*QR_rho - QR[3*NPHASE+ID_Dimension]*QL_rho)/(QL_rho - QR_rho);
-
-    VelL_Star[ID_Dimension] = S_Star;
-    VelR_Star[ID_Dimension] = S_Star;
-    
-    amrex::Real sign_S_Star = Sign(S_Star);
-
-    for(int id = 0; id<AMREX_SPACEDIM; ++id){
-        Vel_Riemann[id] = 0.5*(1.0 + sign_S_Star) *( VelL[id] + Sm * ( (SL - VelL[id])/(SL - VelL_Star[id]) - 1.0 ))
-                    +0.5*(1.0 - sign_S_Star) * ( VelR[id] + Sp * ( (SR - VelR[id])/(SR - VelR_Star[id]) - 1.0 ));
-    }
-
-    // Vel_Riemann[ID_Dimension] = 0.5*(1.0 + sign_S_Star) *( VL + Sm * ( (SL - VL)/(SL - S_Star) - 1.0 ))
-    //                 +0.5*(1.0 - sign_S_Star) * ( VR + Sp * ( (SR - VR)/(SR - S_Star) - 1.0 ));
-
-    amrex::Real XiL, XiR;
-
-    // amrex::Real S_Star = VelL_Star[ID_Dimension];
-    
-    // amrex::Real sign_S_Star = Sign(S_Star);
-
-    XiL = (VelL[ID_Dimension] - SL)/(S_Star - SL);
-    XiR = (VelR[ID_Dimension] - SR)/(S_Star - SR);
-
-    // alpha_k
-    amrex::Array<amrex::Real,NPHASE> AlphaL_Star, AlphaR_Star;
-    for(int i_state=0; i_state<NPHASE; ++i_state){
-        ConservativeL_Star[i_state] = QL[i_state]/(S_Star - SL);
-        ConservativeR_Star[i_state] = QR[i_state]/(S_Star - SR);
-        
-        AlphaL_Star[i_state] = ConservativeL_Star[i_state];
-        AlphaR_Star[i_state] = ConservativeR_Star[i_state];
-    }
-
-    // alpha_k rho_k
-    amrex::Array<amrex::Real,NPHASE> Alpha_rhoL_Star, Alpha_rhoR_Star;
-    for(int i_state=NPHASE; i_state<2*NPHASE; ++i_state){
-        ConservativeL_Star[i_state] = QL[i_state]/(S_Star - SL);
-        ConservativeR_Star[i_state] = QR[i_state]/(S_Star - SR);
-        int ik = i_state - NPHASE;
-        Alpha_rhoL_Star[ik] = ConservativeL_Star[i_state];
-        Alpha_rhoR_Star[ik] = ConservativeR_Star[i_state];
-    }
-
-    // alpha_k rho_k e_k
-    amrex::Array<amrex::Real,NPHASE> Alpha_PsL_Star, Alpha_PsR_Star;
-    for(int i_state=2*NPHASE; i_state<3*NPHASE; ++i_state){
-        
-        int ik = i_state - 2*NPHASE;
-        
-        amrex::Real A = EOS_Parameter.A[ik];
-        amrex::Real B = EOS_Parameter.B[ik];
-        // NASG: A -> A xi and alpha -> phi = xi alpha, with xi = 1 - b rho (the star states have the
-        // same xi as their side). xi = 1 and phi = alpha exactly when b = 0.
-        amrex::Real AxiL = A*NASG_Xi(AlphaL[ik], Alpha_rhoL[ik], EOS_Parameter.C[ik]);
-        amrex::Real AxiR = A*NASG_Xi(AlphaR[ik], Alpha_rhoR[ik], EOS_Parameter.C[ik]);
-        amrex::Real PhiL = NASG_Xi(AlphaL[ik], Alpha_rhoL[ik], EOS_Parameter.C[ik])*AlphaL[ik];
-        amrex::Real PhiR = NASG_Xi(AlphaR[ik], Alpha_rhoR[ik], EOS_Parameter.C[ik])*AlphaR[ik];
-        amrex::Real PhiL_Star = NASG_Xi(AlphaL_Star[ik], Alpha_rhoL_Star[ik], EOS_Parameter.C[ik])*AlphaL_Star[ik];
-        amrex::Real PhiR_Star = NASG_Xi(AlphaR_Star[ik], Alpha_rhoR_Star[ik], EOS_Parameter.C[ik])*AlphaR_Star[ik];
-
-        // Alpha_PsL_Star[ik] = (A*Alpha_PsL[ik] + AlphaL[ik]*B - AlphaL_Star[ik]*B*(Alpha_rhoL[ik]/Alpha_rhoL_Star[ik]) 
-        //                     - 0.5*Alpha_PsL[ik]*(Alpha_rhoL[ik]/Alpha_rhoL_Star[ik] - 1.))/(A + 0.5*(Alpha_rhoL[ik]/Alpha_rhoL_Star[ik] -1.));
-
-        // Alpha_PsR_Star[ik] = (A*Alpha_PsR[ik] + AlphaR[ik]*B - AlphaR_Star[ik]*B*(Alpha_rhoR[ik]/Alpha_rhoR_Star[ik]) 
-        //                     - 0.5*Alpha_PsR[ik]*(Alpha_rhoR[ik]/Alpha_rhoR_Star[ik] - 1.))/(A + 0.5*(Alpha_rhoR[ik]/Alpha_rhoR_Star[ik] -1.));
-
-        Alpha_PsL_Star[ik] = (AxiL*Alpha_PsL[ik] + PhiL*B - PhiL_Star*B*(1./XiL) 
-                            - 0.5*Alpha_PsL[ik]*(1./XiL - 1.))/(AxiL + 0.5*(1./XiL -1.));
-
-        Alpha_PsR_Star[ik] = (AxiR*Alpha_PsR[ik] + PhiR*B - PhiR_Star*B*(1./XiR) 
-                            - 0.5*Alpha_PsR[ik]*(1./XiR - 1.))/(AxiR + 0.5*(1./XiR -1.));
-        
-
-        bool PressureBase = true;//Pressure
-        bool OutputInternalEnergy = true;//From Pressure to rho_e 
-        amrex::Real akrhokekL_star, akrhokekR_star;
-
-        EquationOfState_Phase(akrhokekL_star,
-                    Alpha_PsL_Star[ik],
-                    AlphaL_Star[ik],
-                    Alpha_rhoL_Star[ik],
-                    EOS_Parameter,
-                    ik,
-                    PressureBase,
-                    OutputInternalEnergy);
-
-        EquationOfState_Phase(akrhokekR_star,
-                Alpha_PsR_Star[ik],
-                AlphaR_Star[ik],
-                Alpha_rhoR_Star[ik],
-                EOS_Parameter,
-                ik,
-                PressureBase,
-                OutputInternalEnergy);
-        
-    
-        ConservativeL_Star[i_state] = akrhokekL_star;
-        ConservativeR_Star[i_state] = akrhokekR_star;
-    }
-
-    // rho u
-    for(int i_state=3*NPHASE; i_state<3*NPHASE + AMREX_SPACEDIM; ++i_state){
-        ConservativeL_Star[i_state] = VelL_Star[i_state - 3*NPHASE]*QL_rho/(S_Star - SL);
-        ConservativeR_Star[i_state] = VelR_Star[i_state - 3*NPHASE]*QR_rho/(S_Star - SR);
-    }
-
-    // rho E
-    ConservativeL_Star[3*NPHASE + AMREX_SPACEDIM] = (QL[3*NPHASE + AMREX_SPACEDIM] - P_Star*S_Star)/(S_Star - SL);
-    ConservativeR_Star[3*NPHASE + AMREX_SPACEDIM] = (QR[3*NPHASE + AMREX_SPACEDIM] - P_Star*S_Star)/(S_Star - SR);
-
-
-    for (int i_State=0; i_State < NSTATE; ++i_State){
-        Flux_Riemann[i_State] = 0.5*(1.0 + sign_S_Star) * ( FluxL[i_State] + Sm*(ConservativeL_Star[i_State] - ConservativeL[i_State]) )
-                               +0.5*(1.0 - sign_S_Star) * ( FluxR[i_State] + Sp*(ConservativeR_Star[i_State] - ConservativeR[i_State]) );
-
-    }
-    
-    cmax = std::max(cL + std::sqrt(AMREX_D_TERM(uL*uL, + vL*vL, + wL*wL)), cR + std::sqrt(AMREX_D_TERM(uR*uR, + vR*vR, + wR*wR)));
-   
 }
-
 #endif
 #endif

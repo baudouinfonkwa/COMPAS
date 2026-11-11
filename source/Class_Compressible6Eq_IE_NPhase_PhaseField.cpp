@@ -6,6 +6,7 @@
 
 
 
+#include <Macros.H>
 #include <COMPAS.H>
 #include <Kernels.H>
 #include <AMReX_MultiFabUtil.H>
@@ -48,7 +49,10 @@ Compressible6Eq_IE_NPhase_PhaseField::PostTimeStage (MultiFab & mf,
                                            int lev)
 {
 #if (PHYSICS==SIXEQS_IE_NPHASE)
-    // Correction_Energy(mf, d_parm);
+    if(h_parm->Physics_Parm.PressureTemperatureRelaxation()){
+        SixEqIE_RelaxEquilibrium(mf,d_parm,h_parm->Physics_Parm.chemical_relaxation);
+        return;
+    }
     // The flag is read on the host from h_parm. Relaxation_Pressure copies *parm by value
     // on the host into its kernel, so it takes h_parm, not d_parm
     if (h_parm->Physics_Parm.pressure_relaxation){
@@ -147,6 +151,16 @@ Compressible6Eq_IE_NPhase_PhaseField::RefluxSourceTerms (amrex::MultiFab & new_d
                     dofArray(i,j,k,a1+i_Phase) += -Alpha[i_Phase]*Div_Vel;
                     dofArray(i,j,k,a1r1e1+i_Phase) += Alpha_Ps[i_Phase]*Div_Vel;
                 }
+#if (DIFFUSION == true)
+                if(EOS_Parameter->Physics_Parm.compatible_diffusion){
+                    amrex::Real capacity=0.;
+                    for(int l=0;l<NPHASE;++l)capacity+=Alpha_rho[l]*EOS_Parameter->cv[l];
+                    amrex::Array<amrex::Real,AMREX_SPACEDIM> vel={AMREX_D_DECL(u,v,w)};
+                    amrex::Real correction=-xiArray(i,j,k,IE_NC_WORK)-xiArray(i,j,k,IE_NC_HEAT);
+                    for(int b=0;b<AMREX_SPACEDIM;++b)correction+=vel[b]*xiArray(i,j,k,IE_NC_TRACTION+b);
+                    for(int l=0;l<NPHASE;++l)dofArray(i,j,k,INDEX_Energy1+l)+=Alpha_rho[l]*EOS_Parameter->cv[l]/capacity*correction;
+                }
+#endif
             });
         } // end mfi
     } // end omp
@@ -176,7 +190,7 @@ Compressible6Eq_IE_NPhase_PhaseField::RefluxLev (int lev)
     RefluxSourceTerms(dof_new[lev],source_fab,lev,flux_reg_nc);
 #endif
     if (relax){
-        RelaxRefluxedCells(dof_new[lev], state_unrefluxed);
+        RelaxRefluxedCells(dof_new[lev], state_unrefluxed, lev);
     }
 #endif
 }
@@ -292,7 +306,7 @@ Compressible6Eq_IE_NPhase_PhaseField::PhaseField_RefluxLev (int lev)
     PhaseField_RefluxSourceTerms(dof_new[lev],source_fab,lev,flux_reg_nc);
 #endif
     if (relax){
-        RelaxRefluxedCells(dof_new[lev], state_unrefluxed);
+        RelaxRefluxedCells(dof_new[lev], state_unrefluxed, lev);
     }
 #endif
 }
@@ -300,41 +314,47 @@ Compressible6Eq_IE_NPhase_PhaseField::PhaseField_RefluxLev (int lev)
 
 void
 Compressible6Eq_IE_NPhase_PhaseField::RelaxRefluxedCells (MultiFab & mf,
-                                                          MultiFab const & state_unrefluxed)
+                                                          MultiFab const & state_unrefluxed,
+                                                          int lev)
 {
 #if (PHYSICS==SIXEQS_IE_NPHASE)
-    // Relax a copy of the level, and take the relaxed state only in the cells that the reflux
-    // changed (the coarse cells next to the finer level), so that every other cell keeps its bits.
-    // Relaxation_Pressure copies *parm by value on the host into its kernel, so it takes h_parm
-    MultiFab relaxed(mf.boxArray(), mf.DistributionMap(), NSTATE, 0);
-    MultiFab::Copy(relaxed, mf, 0, 0, NSTATE, 0);
-    Relaxation_Pressure(relaxed, h_parm);
-
+    // Reflux also modifies covered coarse cells (including at internal fine
+    // box faces). AverageDownTo replaces them immediately after RefluxLev.
+    // Their temporary states need not be admissible: never correct/relax them.
+    auto const uncovered=amrex::makeFineMask(mf,grids[lev+1],refRatio(lev),
+                                            geom[lev].periodicity(),1,0);
+    Parm const parm=*h_parm;
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
     for (MFIter mfi(mf,TilingIfNotGPU()); mfi.isValid(); ++mfi)
     {
         const Box& bx = mfi.tilebox();
-        Array4<Real      > const& state   = mf.array(mfi);
-        Array4<Real const> const& before  = state_unrefluxed.const_array(mfi);
-        Array4<Real const> const& relaxedArray = relaxed.const_array(mfi);
+        auto const state=mf.array(mfi);
+        auto const before=state_unrefluxed.const_array(mfi);
+        auto const mask=uncovered.const_array(mfi);
         amrex::ParallelFor(bx,
         [=] AMREX_GPU_DEVICE (int i, int j, int k)
         {
-            bool refluxed = false;
-            for (int iState = 0; iState < NSTATE; ++iState){
-                refluxed = refluxed || (state(i,j,k,iState) != before(i,j,k,iState));
+            if(mask(i,j,k)==0)return;
+            bool refluxed=false;
+            for(int n=0;n<NSTATE;++n)refluxed=refluxed || state(i,j,k,n)!=before(i,j,k,n);
+            if(!refluxed)return;
+            Array<Real,NSTATE> input{},output{};
+            for(int n=0;n<NSTATE;++n)input[n]=state(i,j,k,n);
+            for(int l=0;l<NPHASE;++l)if(input[l]<-64.*std::numeric_limits<Real>::epsilon() || input[NPHASE+l]<-64.*std::numeric_limits<Real>::epsilon())
+                printf("IE reflux invalid level=%d cell=(%d,%d,%d) phase=%d alpha_before=%.17g alpha_after=%.17g mass_before=%.17g mass_after=%.17g\n",lev,i,j,k,l,before(i,j,k,l),input[l],before(i,j,k,NPHASE+l),input[NPHASE+l]);
+            if(parm.Physics_Parm.PressureTemperatureRelaxation())
+                SixEqIE_RelaxEquilibriumCell(output,input,parm);
+            else{
+                PressureRelaxation_Cell(output,input,parm,i,j,k);
             }
-            if (refluxed){
-                for (int iState = 0; iState < NSTATE; ++iState){
-                    state(i,j,k,iState) = relaxedArray(i,j,k,iState);
-                }
-            }
+            for(int n=0;n<NSTATE;++n)state(i,j,k,n)=output[n];
         });
     }
 #endif
 }
+
 
 
 void 

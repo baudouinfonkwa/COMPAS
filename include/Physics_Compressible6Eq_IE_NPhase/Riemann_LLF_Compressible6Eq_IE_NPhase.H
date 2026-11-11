@@ -133,10 +133,12 @@ Riemann_LLF (TF & Flux_Riemann,
 
     cmax = std::max(cL + std::sqrt(AMREX_D_TERM(uL*uL, + vL*vL, + wL*wL)), cR + std::sqrt(AMREX_D_TERM(uR*uR, + vR*vR, + wR*wR)));
 
+    amrex::Real Lambda = std::max( std::abs(VL) + cL, std::abs(VR) + cR );
+
 
     for (int i_State=0; i_State < NSTATE; ++i_State){
 
-        Flux_Riemann[i_State] = 0.5*( FluxL[i_State] + FluxR[i_State]) - 0.5*cmax*(ConservativeR[i_State] - ConservativeL[i_State]);
+        Flux_Riemann[i_State] = 0.5*( FluxL[i_State] + FluxR[i_State]) - 0.5*Lambda*(ConservativeR[i_State] - ConservativeL[i_State]);
     }
     
 }

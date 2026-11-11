@@ -8,7 +8,6 @@
 #define Physics_Compressible6Eq_IE_NPhase_H_
 
 #include<EquationOfState_NASG.H>
-#include<RelaxationPressure_Safeguarded.H>
 #include<Variables_Compressible6Eq_IE_NPhase.H>
 #include<Physics_Parameter_Compressible6Eq_IE_NPhase.H>
 
@@ -46,6 +45,8 @@
 #include<EnergyCorrection_Compressible6Eq_IE_NPhase.H>
 
 #include<RelaxationPressure_Instantaneous_Compressible6Eq_IE_NPhase.H>
+#include<RelaxationPressureTemperature_Compressible6Eq_IE_NPhase.H>
+#include<RelaxationChemical_Compressible6Eq_IE_NPhase.H>
 
 
 #endif

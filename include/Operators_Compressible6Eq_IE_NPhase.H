@@ -20,6 +20,7 @@
 #ifndef Operators_Compressible6Eq_IE_NPhase_H_
 #define Operators_Compressible6Eq_IE_NPhase_H_
 
+#include<FVM_LimitReconstructedPair_Compressible6Eq_IE_NPhase.H>
 #include<Conservative2Viscosity_Compressible6Eq_IE_NPhase.H>
 #include<Conservative2Conductivity_Compressible6Eq_IE_NPhase.H>
 #include<FDM_FluxDiffusion_D_Compressible6Eq_IE_NPhase.H>

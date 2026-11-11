@@ -31,6 +31,9 @@
 
 /* Include custom packages */
 #include <Macros.H>
+#if PHYSICS == SIXEQS_IE_NPHASE
+#include <SixEqIE_DiffusionTimeStep.H>
+#endif
 #include <Tools.H>
 #include <Parm.H>
 #include <Operators_FV.H>

@@ -19,7 +19,7 @@ void FluxPhaseField(amrex::Array<amrex::Real, NSTATE>& Flux,
                     Parm const& EOS_Parameter,
                     int ID_FluxPhaseField,
                     int ID_FluxPhase2Flux,
-                    int ID_BE)
+                    int ID_Formulation)
 {
      amrex::Array<amrex::Real,(3+AMREX_SPACEDIM)*NPHASE> ConservativePhaseL;
     Conservative2ConservativePhase(ConservativePhaseL,
@@ -29,12 +29,12 @@ void FluxPhaseField(amrex::Array<amrex::Real, NSTATE>& Flux,
     Conservative2ConservativePhase(ConservativePhaseR,
                                    ConservativeR,
                                    EOS_Parameter);
-    
+
     amrex::Array<amrex::Real,(3+AMREX_SPACEDIM)*NPHASE> FluxPhase;
     //UD
     if (ID_FluxPhaseField == 0){
         //Base formulation
-        if (ID_BE == 1){
+        if (ID_Formulation == 0){
             FluxPhasePhaseField_UD_Base(FluxPhase,
                                         cmax,
                                         ConservativePhaseL,
@@ -43,7 +43,7 @@ void FluxPhaseField(amrex::Array<amrex::Real, NSTATE>& Flux,
                                         EOS_Parameter);
         }
         //Efficient formulation
-        else if (ID_BE == 2){
+        else if (ID_Formulation == 1){
             FluxPhasePhaseField_UD_Efficient(FluxPhase,
                                              cmax,
                                              ConservativePhaseL,
@@ -60,9 +60,9 @@ void FluxPhaseField(amrex::Array<amrex::Real, NSTATE>& Flux,
                                 ConservativePhaseR,
                                 Grad_Q,
                                 EOS_Parameter,
-                                ID_BE);
+                                ID_Formulation);
     }
-    
+
     //Phasic formulation
     if (ID_FluxPhase2Flux == 0){
         VectorPhase2Vector(Flux,
@@ -76,7 +76,7 @@ void FluxPhaseField(amrex::Array<amrex::Real, NSTATE>& Flux,
                                                    ConservativeR,
                                                    EOS_Parameter);
     }
-    
+
 }
 
 #endif

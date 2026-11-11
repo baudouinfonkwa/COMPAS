@@ -146,6 +146,48 @@ AMREX_GPU_HOST
 AMREX_FORCE_INLINE
 void UserOutputFunction(T& o)
 {
+#if (PHYSICS == SIXEQS_IE_NPHASE)
+    // Diagnose the unchanged physical diffusion operators before projections:
+    // total-energy/kinetic-energy flux identity versus the actual heating source.
+    using namespace UserOutput;
+    const auto audit=Measure(o,{Sum,Sum,Sum,Max,Sum,Sum,Min,Min},1,
+    [=] AMREX_GPU_DEVICE (Cell const& c,State const& U,Parm const& p)->Values<8>{
+        amrex::Array<Real,NSTATE> state;
+        Real rho=0.,H=0.,alpha_min=1.,mass_min=1.e300;
+        for(int n=0;n<NSTATE;++n)state[n]=U(c.i,c.j,c.k,n);
+        for(int l=0;l<NPHASE;++l){rho+=state[INDEX_Mass1+l];H+=state[INDEX_Energy1+l];
+            alpha_min=std::min(alpha_min,state[l]);mass_min=std::min(mass_min,state[INDEX_Mass1+l]);}
+        amrex::Array<Real,AMREX_SPACEDIM> velocity;
+        Conservative2Velocity(AMREX_D_DECL(velocity[0],velocity[1],velocity[2]),state);
+        Real K=0.;for(int d=0;d<AMREX_SPACEDIM;++d)K+=.5*rho*velocity[d]*velocity[d];
+        amrex::Array<Real,NPHASE> Phi;
+        FDM_Conservative2ViscousDissipation_K(c.i,c.j,c.k,Phi,U,AMREX_D_DECL(c.dx[0],c.dx[1],c.dx[2]),p);
+        Real source=0.,compatible=0.;
+        for(int l=0;l<NPHASE;++l)source+=PhaseDiffusion_DissipationFraction_D(state[l],state[INDEX_Mass1+l])*Phi[l];
+        for(int d=0;d<AMREX_SPACEDIM;++d){
+            amrex::Array<Real,NSTATE> flux[2];
+            SixEqIEDiffusionFace face_data[2];
+            for(int side=0;side<2;++side){
+                amrex::Array<amrex::Array<Real,NSTATE>,FaceStencil::N> stencil;
+                for(int q=0;q<FaceStencil::N;++q){int di,dj,dk;FaceStencil::OffsetOnFace(q,d,di,dj,dk);
+                    di+=side*(d==0);dj+=side*(d==1);dk+=side*(d==2);
+                    for(int n=0;n<NSTATE;++n)stencil[q][n]=U(c.i+di,c.j+dj,c.k+dk,n);}
+                Real bound;FDM_Conservative2FluxDiffusion_D(flux[side],bound,stencil,AMREX_D_DECL(c.dx[0],c.dx[1],c.dx[2]),p,d,&face_data[side]);
+            }
+            Real jump=flux[1][INDEX_Total_Energy]-flux[0][INDEX_Total_Energy];
+            jump-=face_data[1].heat-face_data[0].heat;
+            for(int b=0;b<AMREX_SPACEDIM;++b)jump-=velocity[b]*(flux[1][INDEX_MomentumX+b]-flux[0][INDEX_MomentumX+b]);
+            compatible+=jump/c.dx[d];
+        }
+        if(p.Physics_Parm.compatible_diffusion)source=compatible;
+        Real E=state[INDEX_Total_Energy];
+        return {E*c.dV,H*c.dV,K*c.dV,std::abs(H+K-E)/std::max(Real(1.),std::abs(E)),
+                source*c.dV,compatible*c.dV,alpha_min,mass_min};
+    });
+    WriteRow(o,"diffusion_state.csv",{{"energy",audit[0]},{"thermal",audit[1]},{"kinetic",audit[2]},
+        {"closure_max",audit[3]},{"heating_source",audit[4]},{"heating_compatible",audit[5]},
+        {"alpha_min",audit[6]},{"mass_min",audit[7]}});
+#endif
     switch (UserOutput::HostParm(o).problem)
     {
 #ifdef DIFFUSION_HAS_COUETTE2LAYER

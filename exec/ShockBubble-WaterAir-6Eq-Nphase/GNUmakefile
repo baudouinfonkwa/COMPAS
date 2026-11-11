@@ -21,6 +21,12 @@ USE_CUDA   = FALSE
 USE_HIP    = FALSE
 USE_SYCL   = FALSE
 
+# Optional phase count, isolated from the existing executable.
+NPHASE ?= 2
+ifneq ($(NPHASE),2)
+USERSuffix := .N$(NPHASE)
+endif
+
 Bpack   := ./prob/Make.package 
 Blocs   := . ./prob
 
@@ -34,10 +40,11 @@ include ../Make.exec
 
 DEFINES += -DPHYSICS=SIXEQS_IE_NPHASE
 
-DEFINES += -DNPHASE=2
+DEFINES += -DNPHASE=$(NPHASE)
 
 DEFINES += -DADVECTION=true
-DEFINES += -DDIFFUSION=false
+DIFFUSION ?= false
+DEFINES += -DDIFFUSION=$(DIFFUSION)
 DEFINES += -DNONCONSERVATIVE=true
 
 
